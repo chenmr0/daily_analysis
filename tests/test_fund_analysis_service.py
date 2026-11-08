@@ -92,12 +92,12 @@ def test_news_reuses_topic_search_filters_identity_and_rejects_script_links(tmp_
     fetcher, search = Mock(), Mock()
     fetcher.fetch.return_value = sample()
     search.search_topic_news_bounded.return_value = SimpleNamespace(success=True, results=[
-        SimpleNamespace(title="001672基金公告", snippet="示例基金A", url="javascript:alert(1)",
+        SimpleNamespace(title="示例基金A基金公告", snippet="示例基金A", url="javascript:alert(1)",
                         source="<script>", published_date="2026-11-06"),
         SimpleNamespace(title="无关股票", snippet="不相关", url="https://example.com/stock", source="x", published_date=None),
     ])
     report = run_fund_analysis("001672", fetcher=fetcher, search_service=search, output_dir=tmp_path)
-    assert "001672基金公告" in report.markdown
+    assert "示例基金A基金公告" in report.markdown
     assert "无关股票" not in report.markdown
     assert "javascript:" not in report.markdown
     assert "<script>" not in report.markdown
@@ -171,3 +171,44 @@ def test_notification_transport_feedback_is_persisted_without_recipients(tmp_pat
         "status": "sent", "channels": [{"channel": "email", "success": True, "error_code": None}],
     }
     notifier.send_with_results.assert_called_once()
+
+
+@pytest.mark.parametrize("code,name,title,snippet,accepted", [
+    ("025500", "东方阿尔法科技智选混合发起C",
+     "fmvp得分仅排第十？盘点25-26赛季NBA得分前十榜单加短评",
+     "东方阿尔法科技智选混合发起C", False),
+    ("001672", "国寿安保智慧生活股票A", "基金重仓股调整引关注",
+     "国寿安保智慧生活股票A基金重仓该股", False),
+    ("001672", "国寿安保智慧生活股票A",
+     "11月6日国瓷材料跌5.95%，国寿安保智慧生活股票A基金重仓该股_大风号_凤凰网", "", True),
+    ("001672", "国寿安保智慧生活股票A",
+     "11月6日联瑞新材跌5.24%，国寿安保智慧生活股票A基金重仓该股", "", True),
+    ("001672", "国寿安保智慧生活股票A", "国寿安保智慧生活股票C基金公告",
+     "国寿安保智慧生活股票A", False),
+    ("001672", "国寿安保智慧生活股票A", "国寿安保智慧生活股票AC基金公告", "", False),
+    ("021190", "南方亚太精选ETF联接(QDII)C",
+     "南方亚太精选ＥＴＦ联接（QDII）Ｃ基金公告", "", True),
+    ("021190", "南方亚太精选ETF联接(QDII)C",
+     "南方亚太精选ETF联接&#40;QDII&#41;&nbsp;C 基金公告", "", True),
+])
+def test_news_requires_full_fund_identity_in_headline(tmp_path, code, name, title, snippet, accepted):
+    fetcher, search = Mock(), Mock()
+    fetcher.fetch.return_value = sample(code=code, name=name)
+    search.search_topic_news_bounded.return_value = SimpleNamespace(success=True, results=[
+        SimpleNamespace(title=title, snippet=snippet, url="https://example.com/news",
+                        source="example.com", published_date="2026-11-06"),
+    ])
+    report = run_fund_analysis(code, fetcher=fetcher, search_service=search, output_dir=tmp_path)
+    saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    news = saved["news"][code]
+    assert len(news) == 1
+    assert ("关联依据：标题含本基金全名" in news[0]) is accepted
+    assert ("未找到通过本基金身份匹配" in news[0]) is not accepted
+    assert "标题或摘要" not in report.markdown
+    if accepted:
+        assert "example.com/news" in news[0]
+        assert "来源：example.com" in news[0]
+        assert "发布日期：2026-11-06" in news[0]
+    search.search_topic_news_bounded.assert_called_once_with(
+        name, max_results=5, focus_keywords=[f'"{name}"', f'"{code}"', "基金 公告"], timeout_seconds=12.0,
+    )

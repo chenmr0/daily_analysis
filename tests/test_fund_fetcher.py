@@ -4,9 +4,9 @@ import json
 import unittest
 from datetime import date
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
-from data_provider.fund_fetcher import FundDataError, FundFetcher, _literal
+from data_provider.fund_fetcher import FundDataError, FundFetcher, UnsupportedFundError, _literal
 
 
 CODE = "001234"
@@ -15,7 +15,7 @@ SCRIPT = ('var ishb=false;var fS_code="001234";var fS_name="测试基金C";'
           '{"x":1704124800000,"y":1.01,"equityReturn":1,"unitMoney":""}];'
           'var Data_ACWorthTrend=[[1704038400000,1.0],[1704124800000,1.01]];'
           'var Data_currentFundManager=[{"name":"测试经理"}];')
-PROFILE = ('<table><tr><td>基金类型</td><td>混合型-偏股</td><td>发行日期</td></tr>'
+PROFILE = ('<title>测试基金C(001234)基金基本概况</title><table><tr><td>基金类型</td><td>混合型-偏股</td><td>发行日期</td></tr>'
            '<tr><td>成立日期/规模</td><td>2020年01月01日 / 1亿份</td></tr></table>')
 HISTORY = json.dumps({"ErrCode": 0, "Data": {"LSJZList": [{"FSRQ": "2024-01-02", "DWJZ": "1.0100", "NAVTYPE": "1"}]}})
 MARKUP = ('<h4>股票投资明细 截止至：<font>2023-12-31</font></h4>'
@@ -24,12 +24,18 @@ MARKUP = ('<h4>股票投资明细 截止至：<font>2023-12-31</font></h4>'
 HOLDINGS = 'var apidata={content:' + json.dumps(MARKUP) + ',arryear:[2023],curyear:2023};'
 
 
-def opener_for(script=SCRIPT, profile=PROFILE, history=HISTORY, holdings=HOLDINGS):
+HOMEPAGE = ('<title>测试基金C(001234)基金净值</title><div class="infoOfFund"><table>'
+            '<tr><td>类型：<a>混合型-偏股</a> | 中高风险</td><td>基金经理：<a>备用经理</a></td></tr>'
+            '<tr><td><span>成 立 日</span>：2020-01-01</td></tr></table></div>')
+
+
+def opener_for(script=SCRIPT, profile=PROFILE, history=HISTORY, holdings=HOLDINGS, homepage=""):
     def opener(request, timeout):
         assert timeout > 0
         url = request.full_url
         value = script if "pingzhongdata" in url else (
-            profile if "jbgk_" in url else history if "lsjz?" in url else holdings)
+            profile if "jbgk_" in url else history if "lsjz?" in url else
+            holdings if "FundArchivesDatas" in url else homepage)
         if isinstance(value, Exception):
             raise value
         return io.BytesIO(value.encode("utf-8"))
@@ -100,6 +106,107 @@ class FundFetcherTests(unittest.TestCase):
         self.assertEqual(result.profile.fund_type, "")
         self.assertEqual(len(result.navs), 2)
         self.assertTrue(any("概况请求失败" in warning for warning in result.warnings))
+
+    def test_primary_network_failure_uses_verified_homepage(self):
+        result = FundFetcher(retries=0, opener=opener_for(
+            profile=URLError("private-token-do-not-log"), homepage=HOMEPAGE)).fetch(CODE)
+        self.assertEqual(result.profile.fund_type, "混合型-偏股")
+        self.assertEqual(result.profile.inception_date, date(2020, 1, 1))
+        self.assertEqual(result.profile.manager, "备用经理")
+        self.assertEqual(result.profile.source_url, "https://fund.eastmoney.com/001234.html")
+        self.assertIsNone(result.profile.currency)
+        self.assertTrue(any("URLError" in w for w in result.warnings))
+        self.assertTrue(any("同源备用页面" in w for w in result.warnings))
+        self.assertNotIn("private-token", " ".join(result.warnings))
+
+    def test_wrong_empty_and_malformed_fallback_never_fill_metadata(self):
+        pages = [HOMEPAGE.replace("001234", "999999"), "", "<html>failure</html>",
+                 HOMEPAGE.replace("2020-01-01", "2020-99-99"),
+                 HOMEPAGE.replace("2020-01-01", "--"),
+                 HOMEPAGE.replace("测试基金C", "其他基金C")]
+        for page in pages:
+            with self.subTest(page=page):
+                result = FundFetcher(retries=0, opener=opener_for(
+                    profile=URLError("offline"), homepage=page)).fetch(CODE)
+                self.assertEqual(result.profile.fund_type, "")
+                self.assertIsNone(result.profile.inception_date)
+                self.assertEqual(result.profile.manager, "测试经理")
+                self.assertIn("pingzhongdata", result.profile.source_url)
+                self.assertEqual(len(result.navs), 2)
+                self.assertTrue(any("备用基金概况不可用" in w for w in result.warnings))
+                self.assertTrue(any("仍缺少：类型、成立日期" in w for w in result.warnings))
+
+    def test_both_network_failures_preserve_nav_and_safe_http_diagnostics(self):
+        result = FundFetcher(retries=0, opener=opener_for(
+            profile=HTTPError("https://example.invalid/?token=SECRET", 503, "private", {}, None),
+            homepage=TimeoutError("sensitive timeout detail"))).fetch(CODE)
+        warnings = " ".join(result.warnings)
+        self.assertIn("HTTPError HTTP 503", warnings)
+        self.assertIn("TimeoutError", warnings)
+        self.assertNotIn("SECRET", warnings)
+        self.assertNotIn("sensitive", warnings)
+        self.assertEqual(len(result.navs), 2)
+        self.assertEqual(result.profile.manager, "测试经理")
+        self.assertIsNone(result.profile.inception_date)
+
+    def test_wrong_primary_identity_uses_only_verified_fallback(self):
+        result = FundFetcher(retries=0, opener=opener_for(
+            profile=PROFILE.replace("001234", "999999"), homepage=HOMEPAGE)).fetch(CODE)
+        self.assertEqual(result.profile.manager, "备用经理")
+        self.assertTrue(any("ProfileIdentityError" in w for w in result.warnings))
+
+    def test_fallback_cannot_weaken_money_market_gate(self):
+        with self.assertRaisesRegex(FundDataError, "Money-market"):
+            FundFetcher(retries=0, opener=opener_for(
+                profile=URLError("offline"), homepage=HOMEPAGE.replace("混合型-偏股", "货币型"))).fetch(CODE)
+
+    def test_primary_money_type_survives_incomplete_unrelated_fields(self):
+        no_manager_script = SCRIPT.replace('[{"name":"测试经理"}]', '[]')
+        money_page = PROFILE.replace("混合型-偏股", "货币型")
+        for inception in ["2020年01月01日", "--", "2020年99月99日"]:
+            for script in [SCRIPT, no_manager_script]:
+                with self.subTest(inception=inception, script=script), self.assertRaises(UnsupportedFundError):
+                    FundFetcher(retries=0, opener=opener_for(
+                        script=script, profile=money_page.replace("2020年01月01日", inception),
+                        homepage=HOMEPAGE)).fetch(CODE)
+
+    def test_fallback_money_type_survives_incomplete_unrelated_fields(self):
+        money_page = HOMEPAGE.replace("混合型-偏股", "货币型")
+        for inception in ["2020-01-01", "--", "2020-99-99"]:
+            for manager in ["备用经理", ""]:
+                with self.subTest(inception=inception, manager=manager), self.assertRaises(UnsupportedFundError):
+                    FundFetcher(retries=0, opener=opener_for(
+                        profile=URLError("offline"), homepage=money_page.replace(
+                            "2020-01-01", inception).replace("备用经理", manager))).fetch(CODE)
+
+    def test_missing_primary_manager_tries_complete_fallback(self):
+        result = FundFetcher(retries=0, opener=opener_for(
+            script=SCRIPT.replace('[{"name":"测试经理"}]', '[]'), homepage=HOMEPAGE)).fetch(CODE)
+        self.assertEqual(result.profile.manager, "备用经理")
+        self.assertEqual(result.profile.source_url, "https://fund.eastmoney.com/001234.html")
+        self.assertTrue(any("同源备用页面" in w for w in result.warnings))
+
+    def test_both_missing_manager_is_explicit_and_preserves_primary_fields(self):
+        result = FundFetcher(retries=0, opener=opener_for(
+            script=SCRIPT.replace('[{"name":"测试经理"}]', '[]'),
+            homepage=HOMEPAGE.replace("备用经理", ""))).fetch(CODE)
+        self.assertIsNone(result.profile.manager)
+        self.assertEqual(result.profile.fund_type, "混合型-偏股")
+        self.assertEqual(result.profile.inception_date, date(2020, 1, 1))
+        self.assertIn("jbgk_", result.profile.source_url)
+        self.assertTrue(any("仍缺少：经理" in w for w in result.warnings))
+        self.assertEqual(len(result.navs), 2)
+
+    def test_primary_success_does_not_request_fallback(self):
+        calls = []
+        delegate = opener_for()
+
+        def opener(request, timeout):
+            calls.append(request.full_url)
+            return delegate(request, timeout)
+
+        FundFetcher(opener=opener).fetch(CODE)
+        self.assertNotIn("https://fund.eastmoney.com/001234.html", calls)
 
     def test_duplicate_dates_and_nonfinite_nav_rejected(self):
         for script in [SCRIPT.replace("1704124800000", "1704038400000"),

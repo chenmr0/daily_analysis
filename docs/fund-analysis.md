@@ -53,7 +53,7 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 
 1. `fund.eastmoney.com/pingzhongdata/{code}.js`：基金代码/名称、单位净值、累计净值、日增长率、分红/拆分标记、经理。
 2. `api.fund.eastmoney.com/f10/lsjz`：核对最新净值日期及数值。与第一项同源，不是独立双源容灾。不一致阻止该基金分析；该接口不可用时明确提示仅有单端点数据。
-3. `fundf10.eastmoney.com/jbgk_{code}.html`：类型、成立日期等当前资料。币种未核验时不猜测。
+3. `fundf10.eastmoney.com/jbgk_{code}.html`：类型、成立日期等当前资料。标题校验基金全名及代码；请求失败、身份校验失败或类型/成立日期/经理缺失时，至多增加一个同源备用页面 `fund.eastmoney.com/{code}.html`，先校验身份，再限定解析基金资料表。保留主来源错误类别/HTTP状态和实际采用的来源链接；备用也失败就保留已有可信字段并标明缺失，不用旧资料补值。币种未核验时不猜测。
 4. `FundArchivesDatas.aspx?type=jjcc`：最近披露股票明细及报告期末。缺数据不等于零持仓；报告期末不等于公告日，真实公告日期缺失时保留未知。
 
 请求有超时、重试次数和响应大小上限，校验 HTTP 正文契约、代码一致性、非有限值、净值日期、重复日期及两端点冲突。只用 JSON 字面量解析，不执行外部 JavaScript。不使用盘中估值或估值回填正式净值。
@@ -76,7 +76,7 @@ QDII显示实际净值日期、数据年龄和延迟提示，不硬编码“T+2�
 
 持仓只代表所标报告期。联接基金股票明细并不覆盖目标ETF及其底层持仓，未穿透或做涨跌归因；没有公布日期的资料不能用于历史时点回测。当前快照的经理等资料也不能作为历史资料。
 
-复用现有有时限的题材新闻搜索，查询基金全名与代码；仅展示标题/摘要包含基金全名的结果（六位代码可能与股票重合，不能单独作为匹配依据）、发布日期（缺失则明确）和来源链接。新闻仅提供线索，不自动认定事件真实或解释净值涨跌。检索失败不影响净值报告。标题等外部文本进行HTML/Markdown转义，不允许脚本链接。
+复用现有有时限的题材新闻搜索，查询基金全名与代码；仅展示标题包含完整基金名称及份额类别的结果；统一全半角、HTML实体和空白后匹配，A/C等份额不混用。只在摘要出现基金名或只有数字代码均不通过（可避免搜索摘要夹带基金名而正文主题无关的网页）、发布日期（缺失则明确）和来源链接。严格标题匹配会漏掉没有写全名的相关报道；新闻仅提供线索，不自动认定事件真实或解释净值涨跌。检索失败不影响净值报告。标题等外部文本进行HTML/Markdown转义，不允许脚本链接。
 
 ## 已知范围限制
 
@@ -98,4 +98,4 @@ python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/te
 
 ## English summary
 
-This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange fund NAV reports. Use `--funds` (optionally reading `FUND_LIST`), never `STOCK_LIST`. Manual `funds-only` dispatch accepts a one-time `fund_codes` override; fund reruns suppress notifications. No fund cron is added or enabled, and the original stock schedule is unchanged. Existing stock/ETF routes remain unchanged. Run with `--no-notify --fund-no-news` for safe live validation. It saves separate Markdown/JSON artifacts, validates identity and dates, and reuses existing news and notification services. Return metrics are conservative event-free unit-NAV changes, not a claimed reinvested total-return series. Distributions, missing data and insufficient history produce N/A. QDII publication lags and dated holdings are explicit. Web/API/scheduling, look-through, subscriptions/redemptions, trading and backtesting are out of scope. All data currently comes from the same Eastmoney source family.
+This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange fund NAV reports. Use `--funds` (optionally reading `FUND_LIST`), never `STOCK_LIST`. Manual `funds-only` dispatch accepts a one-time `fund_codes` override; fund reruns suppress notifications. No fund cron is added or enabled, and the original stock schedule is unchanged. Existing stock/ETF routes remain unchanged. Run with `--no-notify --fund-no-news` for safe live validation. It saves separate Markdown/JSON artifacts, validates identity and dates, and reuses existing news and notification services. News requires the complete fund/share-class identity in the headline; snippet-only matches are rejected, at the cost of lower recall. Return metrics are conservative event-free unit-NAV changes, not a claimed reinvested total-return series. Distributions, missing data and insufficient history produce N/A. QDII publication lags and dated holdings are explicit. Web/API/scheduling, look-through, subscriptions/redemptions, trading and backtesting are out of scope. Fund profile failures use one identity-checked same-provider homepage fallback, preserving diagnostics and missing-field warnings. All data currently comes from the same Eastmoney source family.

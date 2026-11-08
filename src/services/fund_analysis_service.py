@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import re
 from typing import Dict, List, Optional
+import unicodedata
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,24 @@ def _link(label: str, url: str) -> str:
     return f"[{_text(label)}]({quote(url, safe=':/?=&%+,-._~')})"
 
 
+def _headline_matches_fund(title: str, fund_name: str) -> bool:
+    """Require the full identity in the headline, not an SEO/search snippet."""
+    def normalize(value: str) -> str:
+        return "".join(unicodedata.normalize("NFKC", html.unescape(value)).split())
+
+    name = normalize(fund_name)
+    headline = normalize(title)
+    if not name:
+        return False
+    # Keep share classes and Latin tokens intact: A must not match AC/A1.
+    pattern = re.escape(name)
+    if name[0].isascii() and name[0].isalnum():
+        pattern = r"(?<![A-Za-z0-9])" + pattern
+    if name[-1].isascii() and name[-1].isalnum():
+        pattern += r"(?![A-Za-z0-9])"
+    return re.search(pattern, headline) is not None
+
+
 def _fund_news(data, search_service) -> List[str]:
     if search_service is None or not search_service.is_available:
         return ["未配置可用新闻检索；不影响净值及指标计算。"]
@@ -65,15 +84,13 @@ def _fund_news(data, search_service) -> List[str]:
             return ["新闻检索不可用；不能据此判断没有相关事件。"]
         lines = []
         for item in response.results:
-            identity_text = f"{item.title} {item.snippet}"
-            # A bare six-digit code can be a stock. Require the actual fund
-            # name in retrieved text, not the numeric coincidence alone.
-            if profile.name not in identity_text:
+            # Numeric codes and snippet-only mentions are insufficient evidence.
+            if not _headline_matches_fund(item.title, profile.name):
                 continue
             lines.append(
                 f"{_link(item.title, item.url)}；来源：{_text(item.source)}；"
                 f"发布日期：{_text(item.published_date or '未提供')}；"
-                "关联依据：标题或摘要含本基金全名，未作涨跌归因。"
+                "关联依据：标题含本基金全名（含份额类别），仅作身份匹配，未作涨跌归因。"
             )
         return lines or ["未找到通过本基金身份匹配的近期新闻；不代表没有相关事件。"]
     except Exception as exc:

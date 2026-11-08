@@ -24,6 +24,36 @@ class FundDataError(ValueError):
     """The source did not supply a trustworthy published NAV series."""
 
 
+class UnsupportedFundError(FundDataError):
+    """Verified product type is incompatible with this NAV analysis."""
+
+
+class ProfileIdentityError(FundDataError):
+    """Metadata page does not identify the requested fund."""
+
+
+class ProfileSchemaError(FundDataError):
+    """Metadata page does not contain the required fields."""
+
+
+def _diagnostic(exc: Exception) -> str:
+    """Only error class/status, never arbitrary server or exception text."""
+    cause = exc.__cause__ or exc
+    if isinstance(cause, HTTPError):
+        return f"HTTPError HTTP {cause.code}"
+    return type(cause).__name__
+
+
+def _verify_profile_identity(page: str, code: str, name: str):
+    title = re.search(r"<title\b[^>]*>(.*?)</title>", page, re.S | re.I)
+
+    def normalize(text):
+        return re.sub(r"\s+", "", text).replace("（", "(").replace("）", ")")
+
+    if not title or not normalize(_text(title[1])).startswith(normalize(f"{name}({code})")):
+        raise ProfileIdentityError("Profile identity could not be verified")
+
+
 def _literal(text: str, name: str):
     match = re.search(r"\bvar\s+" + re.escape(name) + r"\s*=\s*", text)
     if not match:
@@ -140,6 +170,8 @@ class FundFetcher:
                                  ("基金经理人", "成立来分红")]:
             match = re.search(re.escape(label) + r"\s+(.*?)\s+" + following, plain)
             fields[label] = match.group(1) if match else ""
+        if "货币" in fields.get("基金类型", ""):
+            raise UnsupportedFundError("Money-market fund NAV convention is unsupported")
         inception = re.search(r"成立日期/规模\s+(\d{4})年(\d{2})月(\d{2})日", plain)
         established = date(*map(int, inception.groups())) if inception else None
         managers = fields.get("基金经理人")
@@ -153,6 +185,76 @@ class FundFetcher:
             manager=managers or None, inception_date=established,
             source_url=source_url,
         )
+
+    @staticmethod
+    def _homepage_profile(code: str, name: str, page: str, url: str) -> FundProfile:
+        _verify_profile_identity(page, code, name)
+        # Restrict fields to the first fund-information table, not news/sidebar text.
+        section = re.search(r'<div\b[^>]*class=["\']infoOfFund["\'][^>]*>.*?'
+                            r'<table\b[^>]*>(.*?)</table>', page, re.S | re.I)
+        if not section:
+            raise ProfileSchemaError("Fund information table missing")
+        fields = [_text(cell) for cell in re.findall(
+            r"<td\b[^>]*>(.*?)</td>", section[1], re.S | re.I)]
+        # Inspect verified type before parsing unrelated optional metadata.
+        for cell in fields:
+            if cell.startswith("类型：") and "货币" in cell.split("：", 1)[1].split("|", 1)[0]:
+                raise UnsupportedFundError("Money-market fund NAV convention is unsupported")
+        fund_type = manager = ""
+        inception = None
+        for cell in fields:
+            if cell.startswith("类型："):
+                fund_type = cell.split("：", 1)[1].split("|", 1)[0].strip()
+            elif cell.startswith("基金经理："):
+                manager = cell.split("：", 1)[1].strip()
+            else:
+                match = re.fullmatch(r"成\s*立\s*日\s*[：:]\s*(\d{4}-\d{2}-\d{2})", cell)
+                if match:
+                    try:
+                        inception = date.fromisoformat(match[1])
+                    except ValueError as exc:
+                        raise ProfileSchemaError("Invalid inception date") from exc
+        if not fund_type or not manager or inception is None:
+            raise ProfileSchemaError("Incomplete homepage profile")
+        return FundProfile(code=code, name=name, fund_type=fund_type,
+                           manager=manager, inception_date=inception, source_url=url)
+
+    def _load_profile(self, code: str, name: str, script: str, source: str,
+                      warnings: list[str]) -> FundProfile:
+        primary_url = f"https://fundf10.eastmoney.com/jbgk_{code}.html"
+        fallback_url = f"https://fund.eastmoney.com/{code}.html"
+        profile = self._profile(code, name, script, "", source)
+        try:
+            page = self._get(primary_url)
+            _verify_profile_identity(page, code, name)
+            candidate = self._profile(code, name, script, page, primary_url)
+            profile = candidate
+            if candidate.fund_type and candidate.inception_date is not None and candidate.manager:
+                return candidate
+            raise ProfileSchemaError("Incomplete primary profile")
+        except UnsupportedFundError:
+            raise
+        except (FundDataError, UnicodeError, ValueError) as exc:
+            warnings.append(f"基金概况请求失败或资料校验未通过 [{_diagnostic(exc)}]：{primary_url}")
+        try:
+            candidate = self._homepage_profile(code, name, self._get(fallback_url), fallback_url)
+        except UnsupportedFundError:
+            raise
+        except (FundDataError, UnicodeError, ValueError) as exc:
+            warnings.append(f"备用基金概况不可用 [{_diagnostic(exc)}]：{fallback_url}；保留已验证资料。")
+        else:
+            warnings.append(f"基金概况已使用身份核验通过的同源备用页面：{fallback_url}；非独立数据源复核。")
+            profile = candidate
+        missing = []
+        if not profile.fund_type:
+            missing.append("类型")
+        if profile.inception_date is None:
+            missing.append("成立日期")
+        if not profile.manager:
+            missing.append("经理")
+        if missing:
+            warnings.append("基金概况仍缺少：" + "、".join(missing) + "；未补造数据。")
+        return profile
 
     @staticmethod
     def _holdings(script: str, url: str,
@@ -222,13 +324,7 @@ class FundFetcher:
         if navs[-1].nav_date > now.astimezone(timezone(timedelta(hours=8))).date():
             raise FundDataError("Published NAV date is in the future")
         warnings = []
-        profile_url = f"https://fundf10.eastmoney.com/jbgk_{code}.html"
-        try:
-            page = self._get(profile_url)
-        except (FundDataError, UnicodeError):
-            page = ""
-            warnings.append("基金概况请求失败；类型、成立日期等资料可能缺失。")
-        profile = self._profile(code, name, script, page, profile_url if page else source)
+        profile = self._load_profile(code, name, script, source, warnings)
         if "货币" in profile.fund_type:
             raise FundDataError("Money-market fund NAV convention is unsupported")
         if not profile.fund_type:
