@@ -17,8 +17,25 @@ on:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
           - stocks-only   # 仅股票分析
+          - funds-only    # 仅场外基金分析（FUND_LIST）
+      fund_codes:
+        description: '基金代码，逗号分隔（仅 funds-only；留空使用 FUND_LIST）'
+        required: false
+        default: ''
+        type: string
       force_run:
         description: '强制运行（跳过交易日检查）'
+        required: false
+        default: false
+        type: boolean
+
+      no_notify:
+        description: '仅生成报告，不发送通知'
+        required: false
+        default: false
+        type: boolean
+      fund_no_news:
+        description: '基金模式跳过新闻搜索'
         required: false
         default: false
         type: boolean
@@ -62,6 +79,15 @@ jobs:
       
       - name: 执行股票分析
         env:
+          ANALYSIS_EVENT_NAME: ${{ github.event_name }}
+          ANALYSIS_SCHEDULE: ${{ github.event.schedule }}
+          ANALYSIS_INPUT_MODE: ${{ inputs.mode }}
+          ANALYSIS_FUND_CODES: ${{ inputs.fund_codes }}
+          ANALYSIS_FORCE_RUN: ${{ inputs.force_run || 'false' }}
+          ANALYSIS_NO_NOTIFY: ${{ inputs.no_notify || 'false' }}
+          ANALYSIS_FUND_NO_NEWS: ${{ inputs.fund_no_news || 'false' }}
+          ANALYSIS_RUN_ATTEMPT: ${{ github.run_attempt }}
+          FUND_LIST: ${{ vars.FUND_LIST || secrets.FUND_LIST }}
           # ==========================================
           # AI 配置
           # ==========================================
@@ -472,7 +498,7 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          MODE="${ANALYSIS_INPUT_MODE:-full}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -544,21 +570,8 @@ jobs:
           echo "=========================================="
           echo ""
           
-          # 构建命令行参数
-          FORCE_RUN_ARG=""
-          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
-            FORCE_RUN_ARG="--force-run"
-            echo "⚡ 已启用强制运行模式（跳过交易日检查）"
-          fi
-
-          # 执行分析
-          if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review $FORCE_RUN_ARG
-          elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
-          else
-            python main.py $FORCE_RUN_ARG
-          fi
+          # 单一入口使用参数列表执行，禁止 shell 拼接或失败后回退股票模式。
+          python .github/scripts/run_daily_analysis.py
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6

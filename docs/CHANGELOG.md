@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 场外基金新增独立 `FUND_LIST` 配置及GitHub Actions手动 `funds-only` 模式，支持单次基金代码覆盖、复用新闻/邮件、重跑禁止重复推送及通知结果落盘；不新增基金定时，不改变原股票cron。
+
+- [新功能] 新增独立 `--funds` 场外基金CLI日报：明确基金身份、已披露净值与来源日期、保守收益/回撤缺失门控、季度股票持仓、基金新闻及既有通知复用；不进入股票/ETF量价、评级和交易链路，详见 `docs/fund-analysis.md`。
+
 - [修复] 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退
 - [文档] 修正 DeepSeek 默认模型说明，明确 Gemini API 与 Vertex AI 的模型生命周期及验证边界。
 - [修复] 深度研究合成阶段预算增至受剩余整体预算限制的 120 秒；阶段/provider 超时保留阶段、实际耗时与原始原因，研究 API 不再误报整体预算耗尽或清零已知 token 用量（#2475）。

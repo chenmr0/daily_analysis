@@ -226,7 +226,8 @@ class EmailSender:
             self._close_server(server)
 
     def _send_email_with_inline_image(
-        self, image_bytes: bytes, receivers: Optional[List[str]] = None
+        self, image_bytes: bytes, receivers: Optional[List[str]] = None,
+        subject: Optional[str] = None,
     ) -> bool:
         """Send email with inline image attachment (Issue #289)."""
         if not self._is_email_configured():
@@ -237,7 +238,7 @@ class EmailSender:
         server: Optional[smtplib.SMTP] = None
         try:
             date_str = datetime.now().strftime('%Y-%m-%d')
-            subject = f"📈 股票智能分析报告 - {date_str}"
+            subject = subject if subject is not None else f"📈 股票智能分析报告 - {date_str}"
             msg = MIMEMultipart('related')
             msg['Subject'] = Header(subject, 'utf-8')
             msg['From'] = self._format_sender_address(sender)

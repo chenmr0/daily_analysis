@@ -86,6 +86,8 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     # CLI-only schedule-mode behavior (python main.py --schedule); the WebUI
     # runtime scheduler does not consult the startup dedup gate.
     "SCHEDULE_STARTUP_DEDUP",
+    # Fund reports are CLI/Actions-only; do not imply Web watchlist support.
+    "FUND_LIST",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {

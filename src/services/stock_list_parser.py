@@ -667,6 +667,17 @@ def parse_analysis_target(
             unsupported_reason="empty input",
         )
 
+    # Explicit fund identities must never be normalized into stock tickers.
+    if unicodedata.normalize("NFKC", raw).casefold().startswith("fund:"):
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.UNSUPPORTED,
+            canonical_id=raw,
+            display_code=raw,
+            exchange="UNKNOWN",
+            unsupported_reason="场外基金请使用独立 --funds 入口，不支持 STOCK_LIST/股票接口",
+        )
+
     # Note: we deliberately use ``is None`` rather than ``or`` so that an
     # explicitly-injected empty :class:`IndexRegistry` (``IndexRegistry([])``)
     # is honoured as a legitimate "no indices whitelisted" configuration.

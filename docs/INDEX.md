@@ -51,6 +51,7 @@
 | [实时告警中心](alerts.md) | EventMonitor 基线、Web 规则管理、通知结果、冷却状态和 Phase 边界 |
 | [个股研究聚合 API](stock-profile-api.md) | 单一 stock-profile 契约、分块质量状态、代码归一与后续 Web 边界 |
 | [DecisionSignal 决策信号专题](decision-signals.md) | AI 建议池字段语义、API、Web 展示、告警/通知/组合风险联动、后验评估、脱敏、迁移与回滚 |
+| [场外基金CLI日报](fund-analysis.md) | 独立基金身份、已披露净值、收益/回撤门控、持仓与通知边界 |
 | [ETF 轮动](etf-rotation.md) | `--etf-rotation` 规则化双动量轮动：规则、配置、报告章节、参数平原解读与数据告警边界 |
 | [ResearchArtifact 结构化研究产物](research-artifact.md) | structured_report 字段、Thesis / Evidence / Invalidation / Next Action / Data Quality 契约和旧报告兼容边界 |
 | [组合风险与暴露看板](portfolio-risk-exposure-dashboard.md) | 持仓页风险旗标、市场暴露、币种暴露和价格质量聚合展示 |

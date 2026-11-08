@@ -308,6 +308,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
   python main.py --stocks sh000016,000300.CSI,930955.CSI  # 指定分析已登记指数（sh/sz 前缀或 .CSI alias）
+  python main.py --funds 021190,018123,020356,001672,025500,024480 --no-notify
   python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
@@ -334,6 +335,19 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）；支持已登记指数：sh/sz 前缀（如 sh000016）或 .CSI alias（如 000300.CSI、930955.CSI）'
+    )
+
+    parser.add_argument(
+        '--funds',
+        type=str,
+        nargs='?',
+        const='',
+        help='独立分析场外基金；省略代码时读取 FUND_LIST，显式代码覆盖配置；不进入股票/ETF链路'
+    )
+    parser.add_argument(
+        '--fund-no-news',
+        action='store_true',
+        help='场外基金模式仅生成确定性净值报告，不检索新闻'
     )
 
     parser.add_argument(
@@ -476,7 +490,23 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.funds is not None:
+        conflicts = [name for name in (
+            'stocks', 'portfolio', 'schedule', 'market_review', 'etf_rotation', 'backtest',
+            'serve', 'serve_only', 'webui', 'webui_only', 'check_notify', 'single_notify',
+        ) if getattr(args, name, False)]
+        if conflicts:
+            parser.error('--funds 不能与以下模式混用：' + ', '.join('--' + key.replace('_', '-') for key in conflicts))
+        from src.core.fund_analysis import parse_fund_codes
+        try:
+            if args.funds:
+                parse_fund_codes(args.funds)
+        except ValueError as exc:
+            parser.error(str(exc))
+    elif args.fund_no_news:
+        parser.error('--fund-no-news 需要 --funds')
+    return args
 
 
 def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[str]:
@@ -1735,6 +1765,27 @@ def main() -> int:
     logger.info("A股自选股智能分析系统 启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
+
+    # 场外基金拥有独立身份、净值和报告路径，不启动股票日历/行情/LLM/Web调度。
+    if getattr(args, 'funds', None) is not None:
+        from src.services.fund_analysis_service import run_fund_analysis
+        try:
+            from src.core.fund_analysis import parse_fund_codes
+            fund_codes = args.funds or parse_fund_codes(getattr(config, 'fund_list', []))
+            report = run_fund_analysis(
+                fund_codes,
+                send_notification=not (args.no_notify or args.dry_run),
+                include_news=not (args.fund_no_news or args.dry_run),
+            )
+            logger.info("基金报告完成: 成功=%d 失败=%d 通知=%s",
+                        len(report.analyses), len(report.failed_codes), report.notification_status)
+            notification_failed = report.notification_status in {
+                'unknown', 'all_failed', 'partial_failed', 'unavailable', 'no_channel',
+            }
+            return 0 if not report.failed_codes and not notification_failed else 1
+        except Exception as exc:
+            logger.exception("基金报告失败: %s", exc)
+            return 1
 
     # 验证配置
     for warning in _startup_config_warnings(config, args):
