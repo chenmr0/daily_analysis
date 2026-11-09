@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 基金日报首屏增加独立程序操作参考，区分观望与证据不足无法判断，分别说明已持有/未持有情形、实际证据日期和后续核验条件；历史涨跌不映射买卖，AI守门/股票/通知行为不变，JSON追加action_references并升至schema 4。
+
+- [修复] 基金AI保留禁止词守门，仅凭对应程序事实接受完整固定风险免责声明，禁止占位符拼接和否定前缀豁免，拒绝组合标记/行段分隔符隐藏禁词；`unsafe_claim` 增加脱敏有限类别，原有逐基金 partial 与比较隔离不变，Run8原文缺失不反推失败原因。
+
 - [修复] 基金AI以程序缺失证据和完整许可短句识别持仓/行业配置限制；全局身份与结构校验保留，单基金及横向观察分范围拒绝并显示 `partial`，快照升至 schema 3，诊断逐范围脱敏，通知/CLI语义不变。
 
 - [修复] 每日 Actions 仅手动 `funds-only` 安装时排除不被基金独立路径使用的 `fxmacrodata-public-client`，其余模式保留完整依赖；保留原清单、哈希及相对 include 语义，安装失败仍中止并清理临时文件。

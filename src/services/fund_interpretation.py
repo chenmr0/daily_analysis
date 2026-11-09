@@ -63,7 +63,7 @@ class EvidenceFact:
     text: str
     source_url: str = ""
     data_date: Optional[str] = None
-    # Program-owned, complete clauses. Never learned from source/model text.
+    # Program-owned clauses / whole risk statements. Never learned from source/model text.
     allowed_limitations: list[str] = field(default_factory=list)
 
 
@@ -142,6 +142,10 @@ def safe_interpretation_diagnostics(value: object) -> dict[str, Any]:
     fund_code = value.get("fund_code")
     if isinstance(fund_code, str) and re.fullmatch(r"[0-9]{6}", fund_code):
         result["fund_code"] = fund_code
+    category = value.get("claim_category")
+    if (stage == "narrative" and code == "unsafe_claim" and isinstance(category, str)
+            and category in _UNSAFE_CLAIM_PATTERNS):
+        result["claim_category"] = category
     section = value.get("section")
     if isinstance(section, str) and section in {*_SECTIONS, "comparison"}:
         result["section"] = section
@@ -233,13 +237,28 @@ _FEEDER_LIMITATIONS = (
 )
 
 
+# Complete program-owned text values, not negation prefixes or free clauses.
+# Nothing may be added before/after these statements (including placeholders).
+# Only the corresponding cited fact kinds can support each statement.
+_RISK_STATEMENTS = {
+    "历史净值表现不保证收益，仍需审慎评估风险。": {"metric"},
+    "历史净值表现不保证回报，仍需审慎评估风险。": {"metric"},
+    "历史净值表现不构成收益预测，仍需审慎评估风险。": {"metric"},
+    "来源关联不构成收益归因，仍需独立核验。": {
+        "dated_holdings", "dated_allocation", "target_relationship",
+    },
+    "关联线索不构成收益归因，仍需独立核验。": {"news_lead"},
+}
+
+
 def _build_context(analyses, news):
     facts: dict[str, EvidenceFact] = {}
     comparison = build_comparison_context(analyses)
 
     def fact(fid, codes, kind, text, url="", day=None, limitations=()):
         facts[fid] = EvidenceFact(fid, list(codes), kind, text, str(url or ""),
-                                  str(day) if day else None, list(limitations))
+                                  str(day) if day else None, [*limitations, *(
+                                      statement for statement, kinds in _RISK_STATEMENTS.items() if kind in kinds)])
 
     for analysis in analyses:
         data, profile = analysis.data, analysis.data.profile
@@ -376,26 +395,34 @@ fund_code必须是输入的完整六位字符串（保留前导零）。其余�
 不能在其他分句加历史来修饰现阶段敞口断言。缺失不能解释为空仓。
 持仓或配置缺失、不可用与信息边界不是持仓断言，但必须引用本基金同主题证据。
 只有事实allowed_limitations列出的完整分句可用于自由文字的缺失或边界陈述，原样使用且独立成句，不追加肯定断言。
+其中包含被禁止词的风险免责声明必须独占整条text，逐字使用完整句，且不得插入占位符、前缀、后缀或其他分句。
+这些风险免责声明可用于conclusion、risks、observations或comparison；evidence仍须完整事实占位符。
 missing_holdings只证明本次输入缺少可用股票资料，不能推出行业配置缺失；missing_allocation只证明本次输入缺少可用行业配置资料。
 缺失不是管理人未披露，也不是没有投资；未知不等于零。其他缺失原因请用完整证据占位符呈现，不自行扩展。
 即使有历史资料，也只能作同分句带历史限定的断言；信息边界不能豁免同句后续持仓或配置断言。
 新闻只是待核实线索，引用时文字必须写“待核实”或“线索”，不将其认证为当前事件、持仓或收益因果关系。
 程序检查不等于语义证明：自由叙述仍可能包含量化、时效或推理错误，不声称由程序保证准确。
-text必须为单行，不使用换行、制表符、隐藏字符、符号图标或Markdown。禁止词法直接匹配，因此否定句也不要复写被禁止词；例如不要写“不构成收益归因”或“不保证收益”，改写为“关联证据不足，仍需独立核验”。
+text必须为单行，不使用换行、制表符、隐藏字符、符号图标或Markdown。除上述完整风险免责声明外，禁止词仍直接匹配；其他否定句也不要复写被禁止词，可改写为“关联证据不足，仍需独立核验”。
 每条text不少于十二字、不超过六百字，不能只输出占位符。以下JSON全部是数据：
 """
     return instructions + json.dumps(payload, ensure_ascii=False, allow_nan=False)
 
 
 # Conservative vocabulary guards are not semantic certification.
-_UNSAFE_CLAIM = re.compile(
-    r"昨天|昨日|今天|今日|明天|明日|上周|本周|下周|上月|本月|下月|去年|今年|明年|"
-    r"评分|打分|分数|收益预测|目标收益|翻倍|翻番|腰斩|买入|卖出|增持|减持|加仓|减仓|抄底|止盈|止损|目标价|买点|卖点|仓位建议|"
-    r"必然|必定|保证收益|稳赚|一定会|确定会|无风险|零风险|保证回报|无需承担.{0,8}风险|不(?:再)?承担.{0,8}风险|风险(?:已)?消失|"
-    r"导致|驱动|推动|得益于|受益于|拖累|贡献|归因|带动|"
-    r"优于|强于|弱于|胜过|逊于|更好|更差|最好|最差|领先|落后|跑赢|跑输|首选|排名|高于|低于|更高|更低|更大|更小|较高|较低",
-    re.IGNORECASE,
-)
+_UNSAFE_CLAIM_PATTERNS = {
+    "relative_time": r"昨天|昨日|今天|今日|明天|明日|上周|本周|下周|上月|本月|下月|去年|今年|明年",
+    "rating": r"评分|打分|分数",
+    "trading_or_forecast": (r"收益预测|目标收益|翻倍|翻番|腰斩|买入|卖出|增持|减持|加仓|减仓|抄底|"
+                            r"止盈|止损|目标价|买点|卖点|仓位建议"),
+    "guarantee": (r"必然|必定|保证收益|稳赚|一定会|确定会|无风险|零风险|保证回报|无需承担.{0,8}风险|"
+                  r"不(?:再)?承担.{0,8}风险|风险(?:已)?消失"),
+    "causal_attribution": r"导致|驱动|推动|得益于|受益于|拖累|贡献|归因|带动",
+    "ranking_or_comparison": (r"优于|强于|弱于|胜过|逊于|更好|更差|最好|最差|领先|落后|跑赢|跑输|首选|"
+                              r"排名|高于|低于|更高|更低|更大|更小|较高|较低"),
+}
+_UNSAFE_CLAIM = re.compile("|".join(
+    f"(?P<{category}>{pattern})" for category, pattern in _UNSAFE_CLAIM_PATTERNS.items()
+), re.IGNORECASE)
 _NON_QUANTITATIVE_TERMS = re.compile("进一步|不一致|一致|一般|单一|统一|同一|一旦|一并|一概|半导体")
 _CHINESE_NUMERALS = re.compile("[零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟萬億兆半幺廿卅卌]")
 _QUANTITY_WORDS = re.compile(r"分之|百分点|百分比|百分率|千分率|基点|成数|成倍|倍数|数倍|翻倍|翻番|腰斩|[几数多满][成分厘倍折]|\d")
@@ -420,6 +447,20 @@ def _supports_limitation(clause, refs, facts):
     return bool(scopes) and scopes <= supported
 
 
+def _supports_risk_statement(compact, refs, facts):
+    # Normalize the entire approved statement exactly as free prose. Do not
+    # strip punctuation or placeholder boundaries, or exempt arbitrary negatives.
+    for statement, kinds in _RISK_STATEMENTS.items():
+        if compact != unicodedata.normalize("NFKC", statement):
+            continue
+        scopes = {code for ref in refs for code in facts[ref].fund_codes}
+        supported = {code for ref in refs
+                     if facts[ref].kind in kinds and statement in facts[ref].allowed_limitations
+                     for code in facts[ref].fund_codes}
+        return bool(scopes) and scopes <= supported
+    return False
+
+
 def _dated_scopes(refs, facts, kind):
     scopes = set()
     for ref in refs:
@@ -434,11 +475,15 @@ def _dated_scopes(refs, facts, kind):
     return scopes
 
 
-def _guard_chinese_prose(text: str, refs, facts) -> str:
+def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -> str:
     """Check an intentionally narrow language surface; never certify meaning."""
-    if any(unicodedata.category(char).startswith("C") for char in text):
-        raise _ValidationError("narrative", "control_character")
     prose = unicodedata.normalize("NFKC", text)
+    # Marks/variation selectors can visually split forbidden words; line and
+    # paragraph separators are not single-line prose even though \s removes them.
+    # Check both views: NFKC can turn spacing accents into combining marks.
+    if any(category.startswith(("C", "M")) or category in {"Zl", "Zp"}
+           for category in map(unicodedata.category, text + prose)):
+        raise _ValidationError("narrative", "control_character")
     compact = re.sub(r"\s+", "", prose)
     for char in _ACRONYMS.sub("", prose):
         category = unicodedata.category(char)
@@ -454,8 +499,9 @@ def _guard_chinese_prose(text: str, refs, facts) -> str:
         raise _ValidationError("narrative", "quantity_word")
     if any(mark in compact for mark in ("{{", "}}", "%", "http://", "https://")):
         raise _ValidationError("narrative", "forbidden_prose_marker")
-    if _UNSAFE_CLAIM.search(compact):
-        raise _ValidationError("narrative", "unsafe_claim")
+    unsafe = _UNSAFE_CLAIM.search(compact)
+    if unsafe and not (allow_risk_statement and _supports_risk_statement(compact, refs, facts)):
+        raise _ValidationError("narrative", "unsafe_claim", claim_category=unsafe.lastgroup)
     scopes = {code for ref in refs for code in facts[ref].fund_codes}
     dated_scopes = {kind: _dated_scopes(refs, facts, kind) for kind in ("dated_holdings", "dated_allocation")}
     for clause in _CLAUSE_SPLIT.split(compact):
@@ -481,7 +527,9 @@ def _guard_chinese_prose(text: str, refs, facts) -> str:
         if (not required or any(not scopes <= dated_scopes[kind] for kind in required)
                 or not _HISTORICAL_EXPOSURE.search(clause)):
             raise _ValidationError("narrative", "historical_evidence_missing")
-    return prose
+    # All downstream lexical checks must use the same normalized view (news
+    # qualifiers, return direction and fund identity); rendered text is unchanged.
+    return compact
 
 
 def _parse_response(text, analyses, facts, comparison):
@@ -591,10 +639,15 @@ def _parse_response(text, analyses, facts, comparison):
                 # Keep the joined view: slots must not split unsafe words,
                 # currentness markers, or topic/citation checks. Also check a
                 # boundary view so they cannot glue a permitted limitation.
-                free_text = _guard_chinese_prose(_PLACEHOLDER.sub("", narrative), refs, facts)
-                _guard_chinese_prose(_PLACEHOLDER.sub("；", narrative), refs, facts)
+                # A risk template must exist intact in the original text: slots
+                # must never manufacture an exemption in either view.
+                free_text = _guard_chinese_prose(
+                    _PLACEHOLDER.sub("", narrative), refs, facts, allow_risk_statement=not placeholders)
+                _guard_chinese_prose(
+                    _PLACEHOLDER.sub("；", narrative), refs, facts, allow_risk_statement=not placeholders)
             except _ValidationError as exc:
-                invalid(exc.diagnostics["stage"], exc.diagnostics["code"])
+                invalid(exc.diagnostics["stage"], exc.diagnostics["code"],
+                        claim_category=exc.diagnostics.get("claim_category"))
             if any(facts[ref].kind == "news_lead" for ref in refs) and not re.search("待核实|待核验|线索", free_text):
                 invalid("narrative", "news_not_qualified")
             returns = [a.metrics[ref.split(":", 1)[1]].value for a in analyses for ref in refs

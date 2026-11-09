@@ -31,7 +31,7 @@ def test_report_is_fund_specific_and_snapshot_is_isolated(tmp_path):
     assert report.notification_status == "disabled"
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
     assert saved["asset_type"] == "mutual_fund"
-    assert saved["schema_version"] == 3
+    assert saved["schema_version"] == 4
     assert saved["interpretation"]["fund_statuses"]["001672"]["status"] == "disabled"
     assert saved["interpretation"]["comparison_status"]["status"] == "disabled"
     assert saved["analyses"][0]["data"]["profile"]["code"] == "001672"
@@ -248,7 +248,7 @@ def test_interpretation_persists_model_and_cited_sections(tmp_path):
     for text in ("核心结论", "风险提示", "后续观察", "test-configured-model", "openai", "https://example.test/nav"):
         assert text in report.markdown
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
-    assert saved["schema_version"] == 3
+    assert saved["schema_version"] == 4
     assert saved["interpretation"]["facts"][fact.evidence_id]["data_date"] == "2026-11-06"
     assert saved["notification"]["status"] == "disabled"
 
@@ -443,7 +443,7 @@ def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(t
     saved_text = open(report.snapshot_path, encoding='utf-8').read()
     saved = json.loads(saved_text)
     interpretation = saved['interpretation']
-    assert saved['schema_version'] == 3
+    assert saved['schema_version'] == 4
     assert report.interpretation_status == interpretation['status'] == 'partial'
     assert interpretation['fund_statuses']['001672']['status'] == 'ok'
     assert interpretation['fund_statuses']['024480']['status'] == ('model_failed' if reject_fund else 'ok')

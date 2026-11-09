@@ -13,6 +13,9 @@ from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from src.core.fund_analysis import FundAnalysis, analyze_fund, parse_fund_codes
+from src.core.fund_action_reference import (
+    FundActionReference, REASON_LABELS as ACTION_REASON_LABELS, build_action_reference, unavailable_reference,
+)
 from src.services.fund_interpretation import (
     FundInterpretation, InterpretationScopeStatus, interpret_funds, safe_interpretation_diagnostics,
 )
@@ -41,6 +44,7 @@ class FundReport:
     notification_status: str = "disabled"
     interpretation_status: str = "disabled"
     interpretation: Optional[FundInterpretation] = None
+    action_references: Dict[str, FundActionReference] = field(default_factory=dict)
 
 
 def _text(value: object) -> str:
@@ -165,8 +169,76 @@ def _overview(analyses, interpretation: Optional[FundInterpretation]) -> List[st
     return lines
 
 
+def _build_action_references(analyses, failed, as_of: date) -> Dict[str, FundActionReference]:
+    references = {}
+    for analysis in analyses:
+        code = analysis.data.profile.code
+        try:
+            reference = build_action_reference(analysis, as_of=as_of)
+            if not isinstance(reference, FundActionReference) or reference.fund_code != code:
+                raise ValueError("Invalid action reference contract")
+            references[code] = reference
+        except Exception:
+            # An isolated reference failure must not discard NAVs or AI scopes.
+            references[code] = unavailable_reference(code, as_of)
+            logger.warning("[基金] %s 操作参考不可用: component_failed", code)
+    for code in failed:
+        references[code] = unavailable_reference(code, as_of, "nav_unavailable")
+    return references
+
+
+def _reference_percent(value: float) -> str:
+    if value != 0 and f"{abs(value) * 100:.2f}" == "0.00":
+        return ("正值" if value > 0 else "负值") + "，绝对值不足0.01%"
+    return f"{value * 100:.2f}%"
+
+
+def _action_reference_lines(analyses, references: Dict[str, FundActionReference]) -> List[str]:
+    lines = ["## 操作参考（程序生成，非个性化）", "",
+             "先看适用情形，再核对证据。历史涨跌只描述方向，不自动映射买入或卖出；这里没有经过回测验证的择时策略。",
+             "未收集个人持仓、成本、期限或风险偏好；下列条件尚未核实，不代表已触发。AI关闭、失败或被拒绝不会改变本节。", ""]
+    names = {a.data.profile.code: a.data.profile.name for a in analyses}
+    sources = {a.data.profile.code: a.data.source_url for a in analyses}
+    currencies = {a.data.profile.code: a.data.profile.currency for a in analyses}
+    lines.extend(["**全部基金速览**（观望不表示继续持有安全；各自依据与适用情形见下方）", ""])
+    for code, reference in references.items():
+        label = "观望" if reference.status == "conditional" else "无法判断"
+        lines.append(f"- {_text(names.get(code, '数据不可用'))}（fund:{_text(code)}）：**{label}**；"
+                     f"净值日期 {reference.nav_date or '不可用'}。")
+    lines.append("")
+    for code, reference in references.items():
+        lines.extend([f"### {_text(names.get(code, '数据不可用'))}（fund:{_text(code)}）", "",
+                      f"**{_text(reference.headline)}**", "",
+                      f"- {_text(reference.not_held)}", f"- {_text(reference.held)}",
+                      f"- 证据日期：净值所属日期 {reference.nav_date or '不可用'}；报告截止日期 {reference.as_of}。"
+                      "净值日期不是实际披露时间或成交日期。"])
+        lines.append(f"- 币种：{_text(currencies.get(code) or '未核验')}；仅展示本基金历史净值变化，不作金额换算或跨基金优劣比较。")
+        for evidence in reference.evidence:
+            label = METRIC_LABELS[evidence.metric]
+            if evidence.value is None:
+                lines.append(f"- {label}：N/A（{_text(evidence.reason or '证据不可用')}）。")
+                continue
+            direction = {"positive": "区间单位净值上升", "negative": "区间单位净值下降", "flat": "区间单位净值持平"}.get(evidence.direction)
+            detail = (f"；{direction}，不直接决定买卖" if direction else
+                      "；历史最差峰谷跌幅，非当前回撤或个人亏损，不作为止损阈值")
+            lines.append(f"- {label}：{_reference_percent(evidence.value)}"
+                         f"（实际区间 {evidence.start_date} 至 {evidence.end_date}）{detail}。")
+        if code in sources:
+            lines.append(f"- {_link('本基金净值证据来源', sources[code])}；同源资料，未独立复核，不作跨基金优劣排名。")
+        for reason in reference.reason_codes:
+            lines.append(f"- 判断限制：{_text(ACTION_REASON_LABELS[reason])}")
+        lines.extend(["", "改变判断前需要核验："])
+        lines.extend(f"- {_text(check)}" for check in reference.next_checks)
+        lines.append("")
+    lines.extend(["本节不提供实时行情、买卖价格、仓位、目标收益或交易执行。各基金实际币种、费用、净值口径与披露时差以详细资料为准。",
+                  "分红/拆分等指标门控继续生效；周末、假期和QDII不按自然日间隔自动判失效或买卖。", ""])
+    return lines
+
+
 def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], news, generated_at: datetime,
-                       interpretation: Optional[FundInterpretation] = None) -> str:
+                       interpretation: Optional[FundInterpretation] = None, *,
+                       action_references: Optional[Dict[str, FundActionReference]] = None,
+                       as_of: Optional[date] = None) -> str:
     lines = [
         "# 场外基金已披露净值日报",
         "",
@@ -177,6 +249,10 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
         "遇到分红、拆分、缺数或历史不足显示 N/A，不将累计净值比值冒充总回报。",
         "",
     ]
+    references = action_references if action_references is not None else _build_action_references(
+        analyses, failed, as_of or generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date(),
+    )
+    lines.extend(_action_reference_lines(analyses, references))
     lines.extend(_overview(analyses, interpretation))
     for analysis in analyses:
         data = analysis.data
@@ -314,6 +390,8 @@ def run_fund_analysis(
         except Exception as exc:
             failed[code] = str(exc) or type(exc).__name__
             logger.warning("[基金] %s 获取或校验失败: %s", code, failed[code])
+    # Freeze references before any model work; model text and statuses are not inputs.
+    action_references = _build_action_references(analyses, failed, end_day)
     try:
         interpretation = (interpreter or interpret_funds)(
             analyses, news_evidence, enabled=include_interpretation and not historical,
@@ -355,20 +433,23 @@ def run_fund_analysis(
     interpretation.diagnostics = safe_interpretation_diagnostics(interpretation.diagnostics)
     if interpretation.diagnostics:
         logger.info("[基金] 模型解读安全诊断: %s", json.dumps(interpretation.diagnostics, ensure_ascii=True, sort_keys=True))
-    report = FundReport(render_fund_report(analyses, failed, news, generated_at, interpretation),
-                        analyses, failed, interpretation_status=interpretation.status, interpretation=interpretation)
+    report = FundReport(render_fund_report(analyses, failed, news, generated_at, interpretation,
+                                         action_references=action_references, as_of=end_day),
+                        analyses, failed, interpretation_status=interpretation.status, interpretation=interpretation,
+                        action_references=action_references)
     directory = Path(output_dir) if output_dir is not None else Path(__file__).resolve().parents[2] / "reports"
     directory.mkdir(parents=True, exist_ok=True)
     basename = f"fund_report_{generated_at:%Y%m%d_%H%M%S_%f}"
     report_path, snapshot_path = directory / f"{basename}.md", directory / f"{basename}.json"
     snapshot = {
-        "schema_version": 3, "asset_type": "mutual_fund", "generated_at": generated_at,
+        "schema_version": 4, "asset_type": "mutual_fund", "generated_at": generated_at,
         "as_of": end_day,
         "analyses": [dict(canonical_id=item.data.profile.canonical_id, **asdict(item)) for item in analyses],
         "failed_codes": failed,
         "news": news,
         "news_evidence": news_evidence,
         "interpretation": asdict(interpretation),
+        "action_references": {code: asdict(reference) for code, reference in action_references.items()},
     }
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str, allow_nan=False), encoding="utf-8")
     report_path.write_text(report.markdown, encoding="utf-8")

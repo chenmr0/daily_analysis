@@ -1,0 +1,458 @@
+{
+  "provenance": {
+    "run_url": "https://github.com/chenmr0/daily_analysis/actions/runs/42574869144",
+    "source_artifact": "fund_report_20261109_064511_825449.json",
+    "source_sha256": "46d3f33926a66175a25ae894eaf9eec7d388084bbe4ae19e3adea4ceb3a2ce7b",
+    "projection": "Actual 018123 and 025500 inputs; final two NAV points, original program metrics, all dated holdings/industry relationships and retained news. Manager and unrelated warnings/coverage omitted. Metrics are preserved, not recalculated from reduced NAVs.",
+    "model_output": "Rejected text and citation IDs unavailable. Test narratives are synthetic examples, not Run 8 replay or proof of its exact rejection cause."
+  },
+  "analyses": [
+    {
+      "canonical_id": "fund:018123",
+      "data": {
+        "profile": {
+          "code": "018123",
+          "name": "永赢数字经济智选混合发起C",
+          "fund_type": "混合型-偏股",
+          "currency": null,
+          "inception_date": "2023-04-10",
+          "source_url": "https://fundf10.eastmoney.com/jbgk_018123.html"
+        },
+        "navs": [
+          {
+            "nav_date": "2026-11-05",
+            "unit_nav": 1.3186,
+            "accumulated_nav": 1.3186,
+            "daily_return_pct": 3.1,
+            "event": ""
+          },
+          {
+            "nav_date": "2026-11-06",
+            "unit_nav": 1.2715,
+            "accumulated_nav": 1.2715,
+            "daily_return_pct": -3.57,
+            "event": ""
+          }
+        ],
+        "fetched_at": "2026-11-09 06:45:29.618455+00:00",
+        "source_url": "https://fund.eastmoney.com/pingzhongdata/018123.js",
+        "holdings": {
+          "report_period_end": "2026-09-30",
+          "holdings": [
+            {
+              "code": "06082",
+              "name": "壁仞科技",
+              "weight_pct": 10.42
+            },
+            {
+              "code": "688256",
+              "name": "寒武纪",
+              "weight_pct": 9.48
+            },
+            {
+              "code": "688347",
+              "name": "华虹宏力",
+              "weight_pct": 8.77
+            },
+            {
+              "code": "688702",
+              "name": "盛科通信",
+              "weight_pct": 8.75
+            },
+            {
+              "code": "09903",
+              "name": "天数智芯",
+              "weight_pct": 8.67
+            },
+            {
+              "code": "688521",
+              "name": "芯原股份",
+              "weight_pct": 8.59
+            },
+            {
+              "code": "688795",
+              "name": "摩尔线程",
+              "weight_pct": 8.57
+            },
+            {
+              "code": "688041",
+              "name": "海光信息",
+              "weight_pct": 8.55
+            },
+            {
+              "code": "688802",
+              "name": "沐曦股份",
+              "weight_pct": 6.99
+            },
+            {
+              "code": "688825",
+              "name": "长鑫科技",
+              "weight_pct": 4.2
+            }
+          ],
+          "source_url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=018123&topline=10&year=&month=",
+          "published_at": null
+        },
+        "warnings": [],
+        "related_assets": [
+          {
+            "category": "industry",
+            "name": "制造业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=018123&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 42.61,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          },
+          {
+            "category": "industry",
+            "name": "信息传输、软件和信息技术服务业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=018123&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 31.98,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          },
+          {
+            "category": "industry",
+            "name": "科技",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=018123&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 19.09,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          }
+        ]
+      },
+      "metrics": {
+        "return_1d": {
+          "value": -0.03571970271500069,
+          "reason": null,
+          "start_date": "2026-11-05",
+          "end_date": "2026-11-06"
+        },
+        "return_1m": {
+          "value": -0.24642920642446509,
+          "reason": null,
+          "start_date": "2026-09-30",
+          "end_date": "2026-11-06"
+        },
+        "return_3m": {
+          "value": -0.397479031417334,
+          "reason": null,
+          "start_date": "2026-08-06",
+          "end_date": "2026-11-06"
+        },
+        "return_6m": {
+          "value": -0.41202312138728325,
+          "reason": null,
+          "start_date": "2026-05-06",
+          "end_date": "2026-11-06"
+        },
+        "return_12m": {
+          "value": -0.2589894515997435,
+          "reason": null,
+          "start_date": "2025-11-06",
+          "end_date": "2026-11-06"
+        },
+        "return_ytd": {
+          "value": -0.22530920611710226,
+          "reason": null,
+          "start_date": "2025-12-31",
+          "end_date": "2026-11-06"
+        },
+        "max_drawdown_12m": {
+          "value": 0.594467604041546,
+          "reason": null,
+          "start_date": "2025-11-06",
+          "end_date": "2026-11-06"
+        }
+      },
+      "warnings": []
+    },
+    {
+      "canonical_id": "fund:025500",
+      "data": {
+        "profile": {
+          "code": "025500",
+          "name": "东方阿尔法科技智选混合发起C",
+          "fund_type": "混合型-偏股",
+          "currency": null,
+          "inception_date": "2025-09-12",
+          "source_url": "https://fundf10.eastmoney.com/jbgk_025500.html"
+        },
+        "navs": [
+          {
+            "nav_date": "2026-11-05",
+            "unit_nav": 1.1301,
+            "accumulated_nav": 1.1301,
+            "daily_return_pct": -0.83,
+            "event": ""
+          },
+          {
+            "nav_date": "2026-11-06",
+            "unit_nav": 1.063,
+            "accumulated_nav": 1.063,
+            "daily_return_pct": -5.94,
+            "event": ""
+          }
+        ],
+        "fetched_at": "2026-11-09 06:47:01.683649+00:00",
+        "source_url": "https://fund.eastmoney.com/pingzhongdata/025500.js",
+        "holdings": {
+          "report_period_end": "2026-09-30",
+          "holdings": [
+            {
+              "code": "603986",
+              "name": "兆易创新",
+              "weight_pct": 7.59
+            },
+            {
+              "code": "300223",
+              "name": "君正股份",
+              "weight_pct": 7.56
+            },
+            {
+              "code": "688825",
+              "name": "长鑫科技",
+              "weight_pct": 7.39
+            },
+            {
+              "code": "688766",
+              "name": "普冉股份",
+              "weight_pct": 7.26
+            },
+            {
+              "code": "300475",
+              "name": "香农芯创",
+              "weight_pct": 7.23
+            },
+            {
+              "code": "001309",
+              "name": "德明利",
+              "weight_pct": 6.43
+            },
+            {
+              "code": "688525",
+              "name": "佰维存储",
+              "weight_pct": 5.49
+            },
+            {
+              "code": "301308",
+              "name": "江波龙",
+              "weight_pct": 5.28
+            },
+            {
+              "code": "688110",
+              "name": "东芯股份",
+              "weight_pct": 4.88
+            },
+            {
+              "code": "688123",
+              "name": "聚辰股份",
+              "weight_pct": 4.85
+            }
+          ],
+          "source_url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=025500&topline=10&year=&month=",
+          "published_at": null
+        },
+        "warnings": [],
+        "related_assets": [
+          {
+            "category": "industry",
+            "name": "制造业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=025500&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 81.5,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          },
+          {
+            "category": "industry",
+            "name": "批发和零售业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=025500&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 7.23,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          },
+          {
+            "category": "industry",
+            "name": "信息传输、软件和信息技术服务业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=025500&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 3.94,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          },
+          {
+            "category": "industry",
+            "name": "电力、热力、燃气及水生产和供应业",
+            "source_url": "https://api.fund.eastmoney.com/f10/HYPZ/?fundCode=025500&year=",
+            "source_date": "2026-09-30",
+            "code": null,
+            "weight_pct": 0.01,
+            "published_at": null,
+            "identity_url": "",
+            "basis": "身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置",
+            "verified": true
+          }
+        ]
+      },
+      "metrics": {
+        "return_1d": {
+          "value": -0.05937527652420149,
+          "reason": null,
+          "start_date": "2026-11-05",
+          "end_date": "2026-11-06"
+        },
+        "return_1m": {
+          "value": -0.28939100207233104,
+          "reason": null,
+          "start_date": "2026-09-30",
+          "end_date": "2026-11-06"
+        },
+        "return_3m": {
+          "value": -0.32499364998729996,
+          "reason": null,
+          "start_date": "2026-08-06",
+          "end_date": "2026-11-06"
+        },
+        "return_6m": {
+          "value": -0.34725207245931844,
+          "reason": null,
+          "start_date": "2026-05-06",
+          "end_date": "2026-11-06"
+        },
+        "return_12m": {
+          "value": -0.015467259423914248,
+          "reason": null,
+          "start_date": "2025-11-06",
+          "end_date": "2026-11-06"
+        },
+        "return_ytd": {
+          "value": -0.0035620547431571836,
+          "reason": null,
+          "start_date": "2025-12-31",
+          "end_date": "2026-11-06"
+        },
+        "max_drawdown_12m": {
+          "value": 0.6304922664541601,
+          "reason": null,
+          "start_date": "2025-11-06",
+          "end_date": "2026-11-06"
+        }
+      },
+      "warnings": []
+    }
+  ],
+  "news_evidence": {
+    "018123": {
+      "items": [],
+      "coverage": {},
+      "warnings": []
+    },
+    "025500": {
+      "items": [
+        {
+          "category": "holding",
+          "title": "兆易创新回购 11.65 亿，股份将全部注销|兆易创新|财联社|回购_新浪新闻",
+          "url": "https://www.sina.cn/news/detail/5362438211896744.html",
+          "source": "sina.cn",
+          "published_date": "2026-11-07",
+          "date_status": "fresh",
+          "retrieved_at": "2026-11-09 06:47:13.952871+00:00",
+          "relation_basis": "股票持仓报告期末 2026-09-30，真实披露日期 未知；兆易创新（披露代码：603986） 为该期已披露对象；股票名称与公司/证券语境匹配；不以数字代码单独认定身份；不代表当前持仓/配置，未作涨跌归因。",
+          "source_date": "2026-09-30",
+          "source_url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=025500&topline=10&year=&month=",
+          "evidence_scope": "related_event",
+          "model_eligible": true
+        },
+        {
+          "category": "holding",
+          "title": "君正股份：第六届董事会第十六次会议决议公告",
+          "url": "https://www.moomoo.com/hans/news/notice/1003879826/junzheng-co-ltd-announcement-of-resolutions-of-the-sixteenth-meeting",
+          "source": "moomoo.com",
+          "published_date": "2026-11-08",
+          "date_status": "fresh",
+          "retrieved_at": "2026-11-09 06:47:16.192532+00:00",
+          "relation_basis": "股票持仓报告期末 2026-09-30，真实披露日期 未知；君正股份（披露代码：300223） 为该期已披露对象；股票名称与公司/证券语境匹配；不以数字代码单独认定身份；不代表当前持仓/配置，未作涨跌归因。",
+          "source_date": "2026-09-30",
+          "source_url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=025500&topline=10&year=&month=",
+          "evidence_scope": "related_event",
+          "model_eligible": true
+        },
+        {
+          "category": "holding",
+          "title": "君正股份(300223):变更回购股份用途并注销- CFi.CN 中财网",
+          "url": "https://www.cfi.net.cn/p20261106001646.html",
+          "source": "cfi.net.cn",
+          "published_date": "2026-11-07",
+          "date_status": "fresh",
+          "retrieved_at": "2026-11-09 06:47:16.192532+00:00",
+          "relation_basis": "股票持仓报告期末 2026-09-30，真实披露日期 未知；君正股份（披露代码：300223） 为该期已披露对象；股票名称与公司/证券语境匹配；不以数字代码单独认定身份；不代表当前持仓/配置，未作涨跌归因。",
+          "source_date": "2026-09-30",
+          "source_url": "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=025500&topline=10&year=&month=",
+          "evidence_scope": "related_event",
+          "model_eligible": true
+        }
+      ],
+      "coverage": {},
+      "warnings": []
+    }
+  },
+  "observed_diagnostics": {
+    "018123": {
+      "stage": "narrative",
+      "code": "unsafe_claim",
+      "fund_code": "018123",
+      "section": "conclusion",
+      "fund_index": 1,
+      "item_index": 0,
+      "counts": {
+        "citation_count": 3,
+        "fund_count": 6,
+        "placeholder_count": 0,
+        "response_bytes": 7299,
+        "response_chars": 4377,
+        "section_count": 1,
+        "text_chars": 59
+      }
+    },
+    "025500": {
+      "stage": "narrative",
+      "code": "unsafe_claim",
+      "fund_code": "025500",
+      "section": "conclusion",
+      "fund_index": 4,
+      "item_index": 0,
+      "counts": {
+        "citation_count": 3,
+        "fund_count": 6,
+        "placeholder_count": 0,
+        "response_bytes": 7299,
+        "response_chars": 4377,
+        "section_count": 1,
+        "text_chars": 62
+      }
+    }
+  }
+}
