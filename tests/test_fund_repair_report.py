@@ -41,7 +41,11 @@ def test_repair_finishes_before_single_notification_and_does_not_recompute_data(
     saved = json.loads(open(report.snapshot_path).read())
     assert saved['interpretation']['fund_statuses']['000002']['repair_status'] == ('succeeded' if repair_valid else 'failed')
     assert report.notification_status == 'sent'
-    assert ('修正一次后通过校验' if repair_valid else '修正仍未获得可用解读') in report.markdown
+    assert f"AI解读 {2 if repair_valid else 1}/2只通过校验" in report.markdown
+    assert ('000002 示例基金000002｜仅数据' in report.markdown) is not repair_valid
+    assert report.markdown.count('横向解读未通过校验') == 1
+    assert saved['interpretation']['fund_statuses']['000002']['status'] == ('ok' if repair_valid else 'model_failed')
+    assert '修正一次后通过校验' not in report.markdown and '修正仍未获得可用解读' not in report.markdown
     assert '拒绝原文' not in json.dumps(saved,ensure_ascii=False)+report.markdown
     assert '第二段私密文字' not in json.dumps(saved,ensure_ascii=False)+report.markdown
     assert not report.interpretation.comparison  # Original invalid comparison never resurrected.

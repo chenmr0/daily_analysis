@@ -41,12 +41,19 @@ def render(saved, analyses, interpretation):
 
 @pytest.mark.parametrize('direction,label', [('consider_buy','买入候选'), ('consider_reduce','减仓候选'),
                                            ('watch','观望'), ('undetermined','无法判断')])
-def test_conditional_decision_precedes_facts_and_does_not_echo_template(direction, label):
+def test_conditional_decision_follows_compact_facts_and_does_not_echo_template(direction, label):
     saved, analyses, interpretation = accepted_report(direction)
     text = render(saved, analyses, interpretation)
     assert label in text
-    assert text.index('操作倾向') < text.index('最新已披露单位净值')
-    assert all(label in text for label in ['**为什么**', '**成立条件**', '**何时改变判断**'])
+    assert text.index('单位净值 ') < text.index('操作倾向')
+    decision = interpretation.funds[analyses[0].data.profile.code].decision
+    assert text.count(decision.rationale.text) == 1
+    assert '**为什么**' not in text
+    assert decision.conditions.text in text and decision.invalidation.text in text
+    assert '**成立条件**' in text and '**何时改变判断**' in text
+    follow_up = next(line for line in text.splitlines() if '**成立条件**' in line)
+    assert '**何时改变判断**' in follow_up
+    assert '后续结果仍有不确定性' in text
     assert '旧核心结论' not in text and '旧完整占位符' not in text
     assert 'F025500:holdings' not in text
     assert '历史持仓 2026-09-30' in text
@@ -87,5 +94,7 @@ def test_news_impact_has_historical_relation_date_source_and_uncertainty():
     assert '是否仍持有未核验' in text
     assert '影响幅度未知' in text
     assert '晚于所列净值日' in text
-    assert '新闻线索 2026-11-07' in text
+    fact = interpretation.facts[news_id]
+    assert fact.data_date in text and fact.source_url in text
+    assert text.count(interpretation.funds[code].news_impacts[0].transmission.text) == 1
     assert '重大利好' not in text and '基金将上涨' not in text

@@ -41,7 +41,7 @@ def valid_output(codes=("000001",)):
             "fund_code": code,
             "decision": {
                 "direction": "undetermined", "basis": "information_gap",
-                "rationale": {"text": "区间净值资料不足以判断经营变化，需要进一步核验研究依据。", "evidence_ids": [prefix + ":return_1m"]},
+                "rationale": {"text": "区间依据：{{" + prefix + ":return_1m}}。缺少经营变化核实证据，暂不能判断投资价值。", "evidence_ids": [prefix + ":return_1m"]},
                 "conditions": {"text": "需补充基金相关经营资料，才能形成有依据的研究判断。", "evidence_ids": [prefix + ":profile"]},
                 "invalidation": {"text": "若资料补充使研究依据清晰，应重新评估原有判断。", "evidence_ids": [prefix + ":quality"]},
             },
@@ -94,7 +94,7 @@ def test_valid_narrative_uses_program_fact_slots_and_actual_provider_metadata():
     assert options["max_tokens"] == module.MAX_OUTPUT_TOKENS and 89 < options["timeout_seconds"] <= 90
     assert options["allow_retries"] is False
     assert "场外基金" in options["system_prompt"] and "不可信数据" in options["system_prompt"]
-    assert "默认只写一项" in prompt and "四十至一百" in prompt and "程序检查不等于语义证明" in prompt
+    assert "默认只写一项" in prompt and "默认均为空数组" in prompt and "程序检查不等于语义证明" in prompt
     assert safe_config.generation_fallback_backend == ""
     assert json.dumps(asdict(result), ensure_ascii=False, allow_nan=False)
 
@@ -128,7 +128,7 @@ def test_unsupported_numbers_dates_trades_rankings_causality_and_current_holding
     lambda x: x["funds"][0]["conclusion"][0].update(score=100),
     lambda x: x.update(scores=[100]),
     lambda x: x["funds"].append(copy.deepcopy(x["funds"][0])),
-    lambda x: x["funds"][0].update(risks=[]),
+    lambda x: x["funds"][0].update(risks={}),
 ])
 def test_invalid_schema_identity_and_citations_discard_all_narrative(mutation):
     output = valid_output()

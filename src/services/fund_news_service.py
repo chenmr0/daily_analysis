@@ -68,6 +68,51 @@ _NAVIGATION_TITLE = re.compile(
     r"(?:\bwhere to (?:find|view|check)\b.{0,40}\b(?:quotes?|filings?|earnings|stock forums?)\b)|"
     r"\b(?:stock forum|message board|stock quote)\s+(?:directory|login|portal)\b", re.I,
 )
+# These identify the purpose of an evergreen page, not a publisher or a list
+# of forbidden words. In particular, 上市公司 is an identity, not an IPO event.
+_BACKGROUND_SUBJECT = (
+    r"公司|企业|ETF|基金|股票代码|证券代码|交易代码|主营业务|主营产品|业务范围|上市时间|上市日期"
+)
+_BACKGROUND_PROFILE = r"(?:公司|企业|ETF|基金|主营业务|主营产品|业务范围)(?:简介|介绍|概况|百科|档案)"
+_BACKGROUND_TITLE = re.compile(
+    r"(?:是哪家|是哪个公司|是什么|属于哪家).{0,8}(?:公司|企业|ETF|基金)|"
+    r"(?:是不是|是否是).{0,6}上市公司|是.{0,6}上市公司吗|"
+    r"(?:公司|企业|ETF|基金).{0,8}是什么|是干什么|是做什么|"
+    r"(?:股票代码|证券代码|交易代码|主营业务|主营产品|业务范围|上市时间|上市日期).{0,8}"
+    r"(?:是什么|是多少|有哪些|是什么时候)|"
+    r"(?:什么时候|何时|是否|有没有).{0,8}上市|上市(?:了吗|了没有)|"
+    r"(?:什么是|何为).{0,20}(?:ETF|基金|上市公司)|"
+    r"(?:什么是|何为).{0,8}(?:处罚|诉讼|停牌|复牌|订单)|"
+    r"(?:处罚|诉讼|停牌|复牌|订单)(?:是?什么意思|是什么)|"
+    + _BACKGROUND_PROFILE + r"|"
+    r"(?:股票代码|证券代码|交易代码)\s*[:：]?\s*[A-Z0-9]{4,10}\b|"
+    r"(?:" + _BACKGROUND_SUBJECT + r").{0,24}(?:一文看懂|一文读懂|科普|详解|入门|指南)|"
+    r"(?:一文看懂|一文读懂|科普|详解|入门|指南).{0,24}(?:" + _BACKGROUND_SUBJECT + r")|"
+    r"\b(?:company overview|company profile|company introduction|ETF explained|what is an? ETF)\b", re.I,
+)
+_BACKGROUND_QUESTION = re.compile(
+    r"什么|哪家|哪个|哪些|多少|何时|什么时候|是否|有没有|了吗|了没有|如何|怎么|\b(?:what|how|when|which)\b", re.I,
+)
+# Only an asserted event can outweigh background intent. Generic 发布/上市
+# cannot rescue a profile, and a question about an event is not an assertion.
+# Include adverse, trading-status and operating events, not just financial
+# results/capital actions. Bare risk or order terms remain background topics.
+_BACKGROUND_EVENT = re.compile(
+    r"(?:今日|昨日|明日|今天|昨天|明天|即将|正式|成功).{0,10}(?:上市|挂牌)|"
+    r"(?:将于|定于).{0,16}(?:上市|挂牌)|(?:新股|新上市).{0,20}[0-9]{1,2}月[0-9]{1,2}日上市|"
+    r"(?:上市|IPO).{0,12}(?:获批|获准|通过|受理|终止|撤回)|"
+    r"(?:主营业务|业务范围|证券代码|股票代码).{0,10}(?:变更|调整|转型)|"
+    r"(?:变更|调整).{0,10}(?:主营业务|业务范围|证券代码|股票代码)|"
+    r"(?:发布|披露|公布).{0,12}(?:财报|季报|年报|中报|业绩|回购|分红|收购)|"
+    r"(?:业绩|营收|营业收入|净利|盈利|亏损).{0,12}(?:增长|下降|增加|减少|[0-9])|"
+    r"(?:宣布|公布|披露|拟|计划|完成|首次|实施).{0,10}(?:回购|收购|并购|分红|派息)|"
+    r"(?:回购|收购|分红|派息).{0,10}(?:[0-9]|完成|实施)|"
+    r"(?:受到|遭到|遭受|被|收到).{0,12}(?:处罚|诉讼|起诉|立案|调查)|"
+    r"(?:股票|股份|证券).{0,8}(?:停牌|复牌)|(?:停牌|复牌)(?:公告|通知)|"
+    r"(?:签订|签署|获得|取得|中标).{0,12}(?:订单|合同|项目)|"
+    r"(?:处罚|诉讼|停牌|复牌|订单|合同)(?:决定|进展|结果|事项|签订)?(?:的)?公告|"
+    r"\b(?:announces?|announced|reports?)\b.{0,30}\b(?:earnings|revenue|buyback|acquisition|IPO)\b", re.I,
+)
 _EVENT_ACTION = re.compile(
     r"发布|公布|披露|宣布|召开|推出|中标|签订|获批|获准|处罚|诉讼|回购|收购|并购|"
     r"分红|派息|涨停|跌停|上涨|下跌|[涨跌][0-9]|增长|减少|增加|暂停|恢复|变更|调整|修订|出炉|"
@@ -88,7 +133,7 @@ _SPECIFIC_EVENT = re.compile(
 _ISSUER_CONTEXT = re.compile(
     r"公司|集团|股份|董事|股东|财报|季报|年报|中报|业绩|营收|营业收入|净利|毛利|盈利|亏损|"
     r"股票|股价|证券|回购|分红|派息|市值|每股|上市|停牌|复牌|涨停|跌停|增持|减持|"
-    r"融资|收购|并购|投资者|[涨跌](?:幅|[0-9])|"
+    r"融资|收购|并购|处罚|诉讼|投资者|[涨跌](?:幅|[0-9])|"
     r"\b(?:company|corporation|earnings|revenue|profit|shares?|stocks?|dividends?|buyback|merger|acquisition)\b", re.I,
 )
 _SECTOR_CONTEXT = re.compile(
@@ -242,9 +287,32 @@ def _static_page(title: str, url: str) -> bool:
     if ((host == "guba.eastmoney.com" or host.endswith(".guba.eastmoney.com"))
             and re.fullmatch(r"/list,[A-Za-z0-9]+(?:_[0-9]+)?\.html", path, re.I)):
         return True
-    if _NAVIGATION_TITLE.search(unicodedata.normalize("NFKC", title)):
+    title = unicodedata.normalize("NFKC", title)
+    if _NAVIGATION_TITLE.search(title):
+        return True
+    if _background_page(title):
         return True
     return bool(_STATIC_TITLE.search(title) and not (_EVENT_ACTION.search(title) or _SPECIFIC_EVENT.search(title)))
+
+
+def _background_page(title: str) -> bool:
+    """Reject evergreen explanations at both live and saved-evidence boundaries.
+
+    An educational label alone is never a veto. A separately asserted, concrete
+    event can coexist with a company introduction, but event words inside an
+    identity/profile question cannot make that page a news lead.
+    """
+    if not _BACKGROUND_TITLE.search(title):
+        return False
+    for clause in re.split(r"[,，;；。:：!?！？|｜]", title):
+        if _BACKGROUND_QUESTION.search(clause):
+            continue
+        event = _BACKGROUND_EVENT.search(clause) or _SPECIFIC_EVENT.search(clause)
+        profile = re.search(_BACKGROUND_PROFILE, clause)
+        # A profile describing its contents does not assert those events.
+        if event and not (profile and profile.start() < event.start()):
+            return False
+    return True
 
 
 def _other_product_portfolio(title: str, asset: FundRelatedAsset) -> bool:

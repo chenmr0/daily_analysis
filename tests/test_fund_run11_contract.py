@@ -44,8 +44,12 @@ def run11_inputs():
 
 
 def complete_impact():
+    """Test news independently of an unsupported investment direction."""
     out = impact_output()
-    out['funds'][0]['decision']['basis'] = 'investment_case'
+    decision = out['funds'][0]['decision']
+    decision.update(direction='undetermined', basis='information_gap')
+    decision['rationale']['text'] = (
+        '{{F000001:return_1m}}历史股票持仓只提供研究对象，本次输入不足以判断企业经营变化。')
     return out
 
 
@@ -82,7 +86,7 @@ def test_watch_needs_substantive_fund_evidence_and_distinct_conditions():
     assert strict_parse(out)[2]['000001'].diagnostics['code'] == 'decision_evidence'
     out = complete_impact()
     d = out['funds'][0]['decision']
-    d['direction'] = 'watch'
+    d.update(direction='watch', basis='investment_case')
     d['conditions'] = copy.deepcopy(d['rationale'])
     assert strict_parse(out, news_bundle())[2]['000001'].diagnostics['code'] == 'decision_basis'
 
@@ -153,10 +157,10 @@ def mock_run11_output(analyses, facts):
         code = item['fund_code']; prefix = f'F{code}'
         eligible = module._eligible_news(facts, code)
         if code == '021190':
-            item['decision']['rationale'] = statement('海外估值与汇率证据尚不完整，无法把区间回落转换为操作判断。', prefix+':return_1m', prefix+':qdii')
+            item['decision']['rationale'] = statement('{{' + prefix + ':return_1m}}本次输入未提供汇率变化证据，无法把区间回落转换为操作判断。', prefix+':return_1m', prefix+':qdii')
             item['decision']['conditions'] = statement('需核验汇率与估值时点，明确其是否改变区间回落的研究解释。', prefix+':qdii')
         elif code == '018123':
-            item['decision']['rationale'] = statement('区间回撤需要重视，但缺少经营变化的核实证据，无法判断回撤后的投资价值。', prefix+':return_1m', prefix+':max_drawdown_12m')
+            item['decision']['rationale'] = statement('{{' + prefix + ':max_drawdown_12m}}本次输入缺少经营变化核实证据，无法判断回撤后的投资价值。', prefix+':return_1m', prefix+':max_drawdown_12m')
         if code == '021190':
             item['risks'] = [statement('海外假期和汇率变化可能改变估值节奏，净值所属时点需单独核对。', prefix+':qdii')]
         if code == '018123':
@@ -179,12 +183,12 @@ def mock_run11_output(analyses, facts):
             item['news_assessment'] = {'status': 'conditional_impacts', 'explanation': statement(
                 '盈利观点线索缺少原始财报及核算依据，无法确认其经营意义或对基金的重要影响。', *remaining) if remaining else None}
         if code == '025500':
-            item['decision']['rationale'] = statement('历史股票名单与回购线索提供了研究对象，但缺少盈利和估值资料，无法判断投资价值。', prefix+':holdings', ids[0])
+            item['decision']['rationale'] = statement('{{' + prefix + ':research_coverage}}历史股票名单与回购线索只提供研究对象，尚无法判断投资价值。', prefix+':research_coverage', prefix+':holdings', ids[0])
             item['decision']['conditions'] = statement('需核验回购注销线索的实施公告，并核对相关企业盈利与估值证据。', prefix+':holdings', ids[0])
             item['decision']['invalidation'] = statement('若注销线索与正式公告不符，或后续报告改变历史股票名单，需要重建研究判断。', prefix+':holdings', ids[0])
             item['risks'] = [statement('回购注销线索并非经营改善的证明，实际执行条件仍需核验。', ids[0])]
         if code == '024480':
-            item['decision']['rationale'] = statement('贷款承诺线索尚不能说明实际回购规模，历史净值路径承压也不能替代估值判断。', prefix+':return_3m', ids[0])
+            item['decision']['rationale'] = statement('{{' + prefix + ':return_3m}}贷款承诺线索尚不能说明实际回购规模，历史净值路径不能替代估值判断。', prefix+':return_3m', ids[0])
             item['decision']['conditions'] = statement('需核验贷款承诺线索的提款条件及实际回购公告，再核对相关企业经营与估值证据。', prefix+':holdings', ids[0])
             item['decision']['invalidation'] = statement('若融资线索未获正式公告支持，或回购安排发生变化，原研究假设需要重新检验。', ids[0])
             item['risks'] = [statement('贷款承诺线索尚未证明资金实际使用，事件时点不能替代净值日期。', ids[0])]
@@ -192,7 +196,7 @@ def mock_run11_output(analyses, facts):
             item['risks'] = [statement('回购线索不能替代企业经营证据，仍需检验现金安排的实际约束。', ids[0])]
             item['decision'] = {
                 'direction': 'watch', 'basis': 'investment_case',
-                'rationale': statement('历史股票名单中的设备企业仍需跟踪经营风险，区间回撤与回购线索尚不足以确认经营改善。',
+                'rationale': statement('{{' + prefix + ':return_1m}}历史股票名单与回购线索提供观察对象，但标题尚不足以确认实施。',
                                        prefix+':return_1m', prefix+':holdings', ids[0]),
                 'conditions': statement('需核验回购线索对应的实施进度与资金用途，并核对历史股票名单的适用时点。', ids[0], prefix+':holdings'),
                 'invalidation': statement('若回购线索未获公告支持，或后续报告改变历史股票名单，等待条件需重新评估。', ids[0], prefix+':holdings'),
@@ -214,8 +218,10 @@ def test_real_inputs_mock_output_cover_nonempty_unknown_and_no_eligible_states()
     text = render_fund_report(analyses, saved['failed_codes'], {}, datetime.fromisoformat(saved['generated_at']),
                               result, as_of=date.fromisoformat(saved['as_of']), news_evidence=saved['news_evidence'])
     assert '贷款承诺' in text and '提款及实际使用条件' in text
-    assert '新闻影响尚无法判断' in text and '盈利观点线索缺少原始财报' in text
-    assert '本次未取得可分析的关联新闻' in text and '股吧在哪' not in text
+    assert '影响待核实' in text and '盈利观点线索缺少原始财报及核算依据' in text
+    assert '关联线索缺少公告正文与实施细节' in text
+    assert '未取得可分析关联新闻' in text and '不代表没有相关事件' in text
+    assert '股吧在哪' not in text
     assert '无法判断' in text and '观望' in text
     assert '基金将上涨' not in text
 
@@ -232,7 +238,7 @@ def test_invalid_basis_isolated_to_its_fund(basis):
 def test_pure_page_verification_is_not_a_concrete_watch_condition():
     out = complete_impact()
     decision = out['funds'][0]['decision']
-    decision['direction'] = 'watch'
+    decision.update(direction='watch', basis='investment_case')
     decision['conditions'] = statement('需核验原始页面与资料口径，确认后再继续观察。', 'F000001:holdings')
     decision['invalidation'] = statement('若原始页面信息发生变化，则需重新核验资料口径。', 'F000001:holdings')
     result = strict_parse(out, news_bundle())
@@ -242,7 +248,10 @@ def test_pure_page_verification_is_not_a_concrete_watch_condition():
 def test_watch_variable_cannot_borrow_an_unrelated_news_fact():
     out = complete_impact()
     decision = out['funds'][0]['decision']
-    decision['direction'] = 'watch'
-    decision['conditions'] = statement('需核验回购线索的实际实施进度，明确资金使用条件。', 'F000001:news:0')
-    result = strict_parse(out, news_bundle())  # Operating-plan headline, not repurchase.
+    decision.update(direction='watch', basis='investment_case')
+    decision['rationale']['text'] += '经营计划线索仍待核验。'
+    decision['rationale']['evidence_ids'].append('F000001:news:0')
+    decision['conditions'] = statement('需核验回购线索的实际实施进度，明确资金使用条件。',
+                                        'F000001:news:0', 'F000001:holdings')
+    result = strict_parse(out, news_bundle())  # Bound operating-plan headline lacks the repurchase variable.
     assert result[2]['000001'].diagnostics['code'] == 'decision_observation'

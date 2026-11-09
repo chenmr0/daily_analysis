@@ -212,7 +212,7 @@ def test_missing_claim_in_comparison_requires_support_for_all_cited_funds():
     (lambda o: o["funds"][1].update(extra="bad"), "fund_schema"),
     (lambda o: o["funds"].pop(), "fund_count"),
     (lambda o: o.update(comparison=None), "section_size"),
-    (lambda o: o.update(comparison=[]), "section_size"),
+    (lambda o: o.update(comparison=o["comparison"] * 7), "section_size"),
     (lambda o: o.update(extra="bad"), "root_schema"),
 ])
 def test_global_preflight_cannot_be_bypassed_by_failed_early_fund(mutation, code):

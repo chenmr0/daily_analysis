@@ -128,7 +128,7 @@ def test_normalized_analysis_controls_report_and_snapshot(tmp_path):
     report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, output_dir=tmp_path,
                                as_of=date(2026, 11, 8))
     assert "99.000000" not in report.markdown
-    assert "最新已披露单位净值：1.100000" in report.markdown
+    assert "单位净值 1.100000" in report.markdown
 
 
 @pytest.mark.parametrize("codes", ["", [], "600519.SH", "001672,"])
@@ -246,10 +246,15 @@ def test_interpretation_persists_model_and_cited_sections(tmp_path):
     assert report.interpretation_status == "ok"
     interpreter.assert_called_once()
     assert interpreter.call_args.kwargs == {"enabled": True}
-    for text in ("核心结论", "风险提示", "后续观察", "test-configured-model", "openai", "https://example.test/nav"):
+    for text in ("模型未提供", "test-configured-model", "openai", "https://example.test/nav"):
         assert text in report.markdown
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    assert report.markdown.count(statement.text) == 1
+    assert "操作倾向" not in report.markdown
     assert saved["schema_version"] == 4
+    for section in ("conclusion", "risks", "evidence", "observations"):
+        assert saved["interpretation"]["funds"]["001672"][section] == [
+            {"text": statement.text, "evidence_ids": statement.evidence_ids}]
     assert saved["interpretation"]["facts"][fact.evidence_id]["data_date"] == "2026-11-06"
     assert saved["notification"]["status"] == "disabled"
 
@@ -265,7 +270,11 @@ def test_interpretation_component_failure_preserves_facts(tmp_path, failure):
     report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, include_interpretation=True,
                                interpreter=interpreter, output_dir=tmp_path)
     assert not report.failed_codes and report.interpretation_status == "model_failed"
-    assert "1.100000" in report.markdown and "未采用模型结论" in report.markdown
+    assert "1.100000" in report.markdown
+    assert report.markdown.count("AI：本期解读不可用或未通过校验") == 1
+    assert "操作倾向" not in report.markdown and "观望" not in report.markdown
+    saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    assert saved["interpretation"]["diagnostics"] == {"stage": "component", "code": "component_failed"}
     assert "private provider detail" not in report.markdown
 
 
@@ -456,11 +465,12 @@ def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(t
     assert interpretation['comparison'] == []
     assert set(interpretation['funds']) == ({'001672'} if reject_fund else set(codes))
     assert len(saved['analyses']) == 2 and not report.failed_codes
-    assert report.markdown.count('最新已披露单位净值：1.100000') == 2
+    assert sum(line.startswith('单位净值 1.100000｜') for line in report.markdown.splitlines()) == 2
     assert report.markdown.count('**操作倾向：无法判断**') == (1 if reject_fund else 2)
-    assert '部分AI解读通过校验' in report.markdown
+    assert f"AI解读 {1 if reject_fund else 2}/2只通过校验" in report.markdown
+    assert ('024480 示例基金A｜仅数据' in report.markdown) is reject_fund
     assert '未生成可采用的模型结论' not in report.markdown
-    assert '横向解读失败' in report.markdown
+    assert report.markdown.count('横向解读未通过校验') == 1
     for marker in ('应拒绝的原始模型文字', '应拒绝的横向模型文字', 'PRIVATE_UNKNOWN_ID', 'PRIVATE_COMPARISON_ID'):
         assert marker not in report.markdown + saved_text
     assert analyzer.generate_text_with_metadata.call_count == (2 if reject_fund else 1)
@@ -495,7 +505,10 @@ def test_partial_scope_diagnostics_are_sanitized_at_reporting_boundary(tmp_path,
     assert saved['comparison_status']['diagnostics'] == expected
     assert '模型解读范围安全诊断 024480:' in caplog.text
     assert '模型解读范围安全诊断 comparison:' in caplog.text
-    assert '已接受的观点' in report.markdown and '引用校验失败' in report.markdown
+    assert '已接受的观点' in report.markdown
+    assert '024480 示例基金A｜仅数据' in report.markdown
+    assert report.markdown.count('横向解读未通过校验') == 1
+    assert saved['fund_statuses']['024480']['reason'] == '引用校验失败。'
     assert r'citation\_unknown' not in report.markdown
     for marker in ('PRIVATE_RESPONSE', 'SECRET_KEY', 'secret-section', 'private-account', 'private-body', 'SECRET_VALUE'):
         assert marker not in saved_text + report.markdown + caplog.text

@@ -73,7 +73,7 @@ def test_failed_repair_preserves_initial_success_and_original_diagnostics(repair
 
 def test_multiple_failed_funds_share_one_call_and_require_empty_comparison():
     initial = broken()
-    initial['funds'][0]['risks'] = []
+    initial['funds'][0]['risks'] = {}
     repair = valid_output(('000001', '000002'))
     repair['comparison'] = []
     result, calls = run_pair(initial, repair)
@@ -186,7 +186,7 @@ def test_routed_repair_identity_is_reported_without_changing_initial_identity():
 
 def test_partial_repair_keeps_only_newly_valid_funds_without_third_call():
     initial = broken()
-    initial['funds'][0]['risks'] = []
+    initial['funds'][0]['risks'] = {}
     repair = broken()
     repair['comparison'] = []
     result, calls = run_pair(initial, repair)

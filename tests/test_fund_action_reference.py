@@ -316,7 +316,12 @@ def test_direct_renderer_and_service_share_cards_and_cutoff_for_failed_and_valid
     fetcher.fetch.side_effect = [sample(), ValueError("invalid NAV")]
     report = run_fund_analysis(["001672", "024480"], fetcher=fetcher, include_news=False,
                                as_of=MONDAY, output_dir=tmp_path)
-    direct = render_fund_report(report.analyses, report.failed_codes, {}, datetime.now(timezone.utc), as_of=MONDAY)
+    # Replay the same persisted inputs, including the historical-news boundary.
+    # This must keep passing after MONDAY becomes a historical cutoff.
+    saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    direct = render_fund_report(report.analyses, report.failed_codes, saved["news"],
+                                datetime.fromisoformat(saved["generated_at"]), report.interpretation,
+                                as_of=MONDAY, news_evidence=saved["news_evidence"])
     assert direct == report.markdown
     assert "fund:024480" in direct and "invalid NAV" in direct
     assert "2026-11-09" in direct

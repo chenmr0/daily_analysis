@@ -113,9 +113,11 @@ def _fund_news(data, search_service) -> List[str]:
     return _news_lines(gather_fund_news(data, search_service))
 
 
-def _statement_line(statement, interpretation: FundInterpretation, label: str = "") -> str:
+def _statement_line(statement, interpretation: FundInterpretation, label: str = "", *,
+                    compact_facts=None, omitted_citations=()) -> str:
     citations = []
     seen = set()
+    statement_text = statement.text
     fact_labels = {"profile": "基金资料", "nav": "净值", "metric": "净值区间",
                    "dated_holdings": "历史持仓", "dated_allocation": "历史行业",
                    "target_relationship": "目标ETF关系", "news_lead": "新闻线索",
@@ -126,6 +128,12 @@ def _statement_line(statement, interpretation: FundInterpretation, label: str = 
         fact = interpretation.facts.get(evidence_id)
         if fact is None:
             continue
+        # Replace only exact program-generated expansions, never rewrite the
+        # model's qualitative prose or remove its conditional language.
+        if compact_facts and evidence_id in compact_facts:
+            statement_text = statement_text.replace(fact.text, compact_facts[evidence_id])
+        if evidence_id in omitted_citations:
+            continue
         source_label = fact_labels.get(fact.kind, "资料")
         if fact.data_date:
             source_label += f" {fact.data_date}"
@@ -134,8 +142,8 @@ def _statement_line(statement, interpretation: FundInterpretation, label: str = 
             continue
         seen.add(key)
         citations.append(_link(source_label, fact.source_url) if fact.source_url else _text(source_label))
-    prefix = f"**{label}**：" if label else ""
-    return f"- {prefix}{_text(statement.text)}" + ("（" + "；".join(citations) + "）" if citations else "")
+    prefix = f"**{_text(label)}**：" if label else ""
+    return f"- {prefix}{_text(statement_text)}" + ("（" + "；".join(citations) + "）" if citations else "")
 
 
 def _repair_note(scope):
@@ -151,18 +159,56 @@ def _repair_note(scope):
     return f"- AI：{label}" if label else None
 
 
-def _decision_lines(insight, interpretation):
-    """Show a validated research view, never invent a stance after model failure."""
+# Only these exact, program-owned disclaimers are non-informative by themselves.
+# Never classify a risk as boilerplate from shared citations or a word such as
+# "历史": e.g. liquidity, suspension and concentration risks must stay visible.
+_GENERIC_RISKS = frozenset({
+    "历史净值表现不保证收益，仍需审慎评估风险。",
+    "历史净值表现不保证回报，仍需审慎评估风险。",
+    "历史净值表现不构成收益预测，仍需审慎评估风险。",
+})
+
+
+def _decision_lines(insight, interpretation, *, compact_facts=None):
+    """Keep distinct reasoning/conditions; only exact repeated text is omitted.
+
+    Shared event IDs do not prove shared meaning: a rationale may identify a
+    valuation gap while an impact describes cash use. Neither may replace the
+    other. Compact follow-up layout does not weaken the accepted conditions.
+    """
     decision = getattr(insight, "decision", None)
     labels = {"consider_buy": "买入候选（有条件新增）",
               "consider_reduce": "减仓候选（若已持有）",
               "watch": "观望", "undetermined": "无法判断"}
+    seen = set()
     if decision is None or decision.direction not in labels:
-        return ["- **操作判断**：本次模型未提供，不能由历史涨跌代替。"]
-    return [f"- **操作倾向：{labels[decision.direction]}**",
-            _statement_line(decision.rationale, interpretation, "为什么"),
-            _statement_line(decision.conditions, interpretation, "成立条件"),
-            _statement_line(decision.invalidation, interpretation, "何时改变判断")]
+        lines = ["- **操作判断**：本次模型未提供。"]
+        statements = [*insight.conclusion[:1], *insight.risks]
+    else:
+        rationale = decision.rationale
+        lines = [_statement_line(rationale, interpretation, f"操作倾向：{labels[decision.direction]}",
+                                 compact_facts=compact_facts)]
+        seen.add(rationale.text)
+        supplements = {}
+        for label, statement in (("成立条件", decision.conditions), ("何时改变判断", decision.invalidation)):
+            if statement is None or statement.text in seen:
+                continue
+            entry = supplements.setdefault(statement.text, {"statement": statement, "labels": []})
+            entry["labels"].append(label)
+        follow_up = [_statement_line(entry["statement"], interpretation, " / ".join(entry["labels"]),
+                                     compact_facts=compact_facts).removeprefix("- ")
+                     for entry in supplements.values()]
+        if follow_up:
+            lines.append("- " + " ".join(follow_up))
+            seen.update(supplements)
+        statements = list(insight.risks)
+    for statement in statements:
+        if statement.text in seen or statement.text in _GENERIC_RISKS:
+            continue
+        seen.add(statement.text)
+        lines.append(_statement_line(statement, interpretation, "风险" if statement in insight.risks else "解读",
+                                     compact_facts=compact_facts))
+    return lines, seen
 
 
 def _build_action_references(analyses, failed, as_of: date) -> Dict[str, FundActionReference]:
@@ -219,7 +265,8 @@ def _metric_line(analysis, key, as_of):
         reason = getattr(original, "reason", None) or "指标或日期证据不足"
         return f"- {label}：N/A（{_text(reason)}）。"
     value = f"{metric.value * 100:.2f}%" if key.startswith("max_drawdown") else _percent(metric.value)
-    return f"- {label}：{value}（{_period_dates(metric.start_date, metric.end_date, as_of)}）。"
+    duration = f"，{(metric.end_date - metric.start_date).days}天" if key == "return_1m" else ""
+    return f"- {label}：{value}（{_period_dates(metric.start_date, metric.end_date, as_of)}{duration}）。"
 
 
 def _scope_label(scope) -> str:
@@ -238,19 +285,77 @@ def _scope_label(scope) -> str:
 
 def _ai_summary(analyses, interpretation):
     if interpretation is None or interpretation.status == "disabled":
-        return "AI未启用；以下为程序数据分析。"
+        return "AI未启用；以下为程序数据。"
     scopes = [interpretation.fund_statuses.get(a.data.profile.code) for a in analyses]
-    if (scopes and all(scope is not None and safe_interpretation_diagnostics(scope.diagnostics).get("code")
-                       == "request_timeout" for scope in scopes)
-            and safe_interpretation_diagnostics(interpretation.comparison_status.diagnostics).get("code")
-            == "request_timeout"):
-        return "AI：本期请求超时，未取得可用解读。"
-    if interpretation.status in {"ok", "partial"}:
-        accepted = sum(scope is not None and scope.status == "ok" and a.data.profile.code in interpretation.funds
-                       for a, scope in zip(analyses, scopes))
-        prefix = "部分AI解读通过校验" if interpretation.status == "partial" else "AI解读通过校验"
-        return f"{prefix}：{accepted}/{len(analyses)}只基金；横向解读{_scope_label(interpretation.comparison_status)}。"
-    return f"AI：{_scope_label(interpretation)}；以下为程序数据分析。"
+    accepted = sum(scope is not None and scope.status == "ok" and a.data.profile.code in interpretation.funds
+                   for a, scope in zip(analyses, scopes)) if interpretation.status in {"ok", "partial"} else 0
+    if not accepted:
+        timeout = scopes and all(scope is not None and safe_interpretation_diagnostics(scope.diagnostics).get("code")
+                                 == "request_timeout" for scope in scopes)
+        return "AI：本期请求超时，未取得可用解读。" if timeout else "AI：本期解读不可用或未通过校验，仅展示数据与新闻线索。"
+    status = f"AI解读 {accepted}/{len(analyses)}只通过校验（推理观点）"
+    if accepted < len(analyses):
+        status += "；其余基金未提供操作判断"
+    if interpretation.comparison_status.status not in {"ok", "not_applicable", "disabled"}:
+        status += "；横向解读未通过校验"
+    return status + "。"
+
+
+def _compact_facts(analyses, interpretation, as_of):
+    """Exact replacements keyed to actual program facts; no narrative rewriting."""
+    result = {}
+    if interpretation is None:
+        return result
+    for analysis in analyses:
+        code = analysis.data.profile.code
+        latest = analysis.data.navs[-1]
+        result[f"F{code}:nav"] = f"单位净值 {latest.unit_nav:.6f}（{latest.nav_date}）"
+        for key in METRIC_LABELS:
+            if _valid_metric(analysis, key):
+                result[f"F{code}:{key}"] = _metric_line(analysis, key, as_of).removeprefix("- ").rstrip("。")
+    return result
+
+
+def _metric_brief(analysis, as_of, *, shown_metrics=()):
+    """The same daily/recent/context budget regardless of AI success.
+
+    Unsafe unselected windows still surface as grouped data errors, rather than
+    silently disappearing when the reader sees only the concise projection.
+    """
+    recent, year = (_valid_metric(analysis, key) for key in ("return_1m", "return_12m"))
+    context = "return_12m" if recent and year and recent.value * year.value < 0 else "max_drawdown_12m"
+    keys = ("return_1d", "return_1m", context)
+    lines = []
+    for key in keys:
+        if key in shown_metrics or _valid_metric(analysis, key) is None:
+            continue
+        line = _metric_line(analysis, key, as_of)
+        lines.append(line)
+    failures = {}
+    for key in dict.fromkeys((*keys, *METRIC_LABELS)):
+        if (key in keys or key in analysis.metrics) and _valid_metric(analysis, key) is None:
+            metric = analysis.metrics.get(key)
+            reason = getattr(metric, "reason", None) or "指标或日期证据不足"
+            failures.setdefault(reason, []).append(METRIC_LABELS[key])
+    for reason, labels in failures.items():
+        label = labels[0] + "：" if len(labels) == 1 else "数据缺口：" + "、".join(labels) + " "
+        lines.append(f"- {label}N/A（{_text(reason)}）。")
+    return lines
+
+
+def _material_warnings(analysis):
+    routine = {
+        "口径：仅在有证据支持区间无分红/拆分时计算单位净值收益，非红利再投资总回报。"
+        "净值差额容差为0.000001；数据源舍入及事件记录完整性可能影响核实。",
+        "QDII净值可能因海外估值及假期延迟披露，不假设固定T+N时效。",
+        "持仓为定期报告期末股票明细，非实时仓位；实际公告日期未知，不能用于历史时点回测。",
+    }
+    for warning in dict.fromkeys([*analysis.data.warnings, *analysis.warnings]):
+        if warning in routine or re.fullmatch(
+                r"同源净值接口已按相同日期核对，最近共同日期 \d{4}-\d{2}-\d{2}；非独立数据源复核。|"
+                r"最新净值日期\d{4}-\d{2}-\d{2}；截至\d{4}-\d{2}-\d{2}已过去\d+个自然日。", warning):
+            continue
+        yield warning
 
 
 def _period_pattern(analysis):
@@ -325,24 +430,23 @@ def _historical_intersections(analyses, as_of):
     return lines
 
 
-def _brief_news(bundle, fallback, nav_date, *, fund_code=None, insight=None, interpretation=None):
+def _brief_news(bundle, fallback, nav_date, *, fund_code=None, insight=None, interpretation=None,
+                digest=None, rendered_statements=(), compact_facts=None, is_feeder=False):
     if bundle is None:
-        # Compatibility callers can still supply text. Structured service calls
-        # use the digest below; full text remains in the snapshot's news field.
-        return [f"- 新闻：{line}" for line in (fallback or []) if "本次未启用新闻检索" not in line]
+        return [f"- 新闻：{_text(line)}" for line in (fallback or []) if "本次未启用新闻检索" not in line]
     warnings = bundle.get("warnings", []) if isinstance(bundle, dict) else bundle.warnings
     if any("新闻组件不可用" in warning for warning in warnings):
         return ["- 新闻组件不可用，近期事件未核验。"]
-    digest = select_news_digest(bundle, max_items=2)
-    lines = []
+    digest = digest if digest is not None else select_news_digest(bundle, max_items=2)
+    lines, relationships = [], set()
     impacts = {item.news_evidence_id: item for item in getattr(insight, "news_impacts", [])}
     for group in digest["items"]:
         item = group["item"]
         get = item.get if isinstance(item, dict) else lambda key, default=None: getattr(item, key, default)
         context = group["reporting_context"]
-        label = {"fund": "基金事件线索", "direct_target": "目标ETF线索",
+        label = {"fund": "基金线索", "direct_target": "目标ETF线索",
                  "historical_holding": "历史关联线索", "sector_background": "行业背景"}.get(context, "待核实线索")
-        lines.append(f"- {label}（{get('published_date') or '日期未知'}）：{_link(get('title', ''), get('url', ''))}")
+        lines.append(f"- {label}：{_link(get('title', ''), get('url', ''))}")
         sources = group["sources"]
         extra = f"；同主体同日相近线索合并{len(sources)}条来源" if len(sources) > 1 else ""
         published = get("published_date")
@@ -352,29 +456,35 @@ def _brief_news(bundle, fallback, nav_date, *, fund_code=None, insight=None, int
             except ValueError:
                 published = None
         timing = "；晚于所列净值日，仅作后续线索" if type(published) is date and published > nav_date else ""
-        lines.append(f"  来源：{_text(get('source', '未提供'))}{extra}{timing}。")
+        lines.append(f"  {_text(get('source', '未提供'))}｜{_text(published or '日期未知')}{extra}{timing}；标题未核实。")
         relationship = group.get("relationship")
-        if relationship and context == "historical_holding":
-            lines.append(f"  基金关联：{relationship.get('source_date') or '日期未知'} 历史股票名单中的"
-                         f"{_text(relationship.get('name', ''))}；是否仍持有未核验。")
-        elif context == "direct_target":
-            lines.append("  基金关联：目标ETF身份已匹配，当前配置比例未核验。")
-        elif context == "sector_background":
-            lines.append("  基金关联：行业或名称主题背景，不等于已确认基金敞口。")
-        impact = impacts.get(f"F{fund_code}:news:{group['item_index']}")
-        if impact is not None and interpretation is not None:
-            lines.append(_statement_line(impact.transmission, interpretation, "可能影响（标题线索未核实）"))
-            lines.append("  对基金影响幅度未知，不能据此解释已发生的净值变化。")
+        relation_key = (context, str(relationship))
+        if relation_key not in relationships:
+            relationships.add(relation_key)
+            if relationship and context == "historical_holding":
+                lines.append(f"  关联：{_text(relationship.get('source_date') or '日期未知')} 历史股票名单中的"
+                             f"{_text(relationship.get('name', ''))}；是否仍持有未核验。"
+                             + (f"{_link('关系来源', relationship['source_url'])}。" if relationship.get("source_url") else "")
+                             + ("联接基金股票表未穿透目标ETF。" if is_feeder else ""))
+            elif context == "direct_target":
+                lines.append("  关联：目标ETF身份已匹配，当前配置比例未核验。")
+            elif context == "sector_background":
+                lines.append("  关联：行业或名称主题背景，不等于已确认基金敞口。")
+        evidence_id = f"F{fund_code}:news:{group['item_index']}"
+        impact = impacts.get(evidence_id)
+        if impact is not None and interpretation is not None and impact.transmission.text not in rendered_statements:
+            lines.append(_statement_line(impact.transmission, interpretation, "可能影响（标题线索未核实）",
+                                         compact_facts=compact_facts, omitted_citations={evidence_id}))
     assessment = getattr(insight, "news_assessment", None)
-    if assessment is not None:
-        if assessment.status in {"insufficient_evidence", "conditional_impacts"} and assessment.explanation is not None and interpretation is not None:
-            lines.append(_statement_line(assessment.explanation, interpretation, "新闻影响尚无法判断"))
-        elif assessment.status == "no_eligible_news":
-            lines.append("- 本次未取得可分析的关联新闻，无法核实是否有重要事件及其影响。")
-    elif insight is not None and not impacts:
-        lines.append("- 本次模型未提供新闻影响分析，不能由标题推定影响。")
-    elif not digest["items"]:
-        lines.append("- 本次未取得可分析的关联新闻，不能据此判断没有重要事件。")
+    if (assessment is not None and assessment.status in {"insufficient_evidence", "conditional_impacts"}
+            and assessment.explanation is not None and interpretation is not None):
+        # A separate assessment can explain an unanalysed event, not merely
+        # reprint the same accepted impact in another mandatory section.
+        displayed = [item.transmission.text for item in impacts.values()]
+        if assessment.explanation.text not in displayed and assessment.explanation.text not in rendered_statements:
+            lines.append(_statement_line(assessment.explanation, interpretation, "影响待核实", compact_facts=compact_facts))
+    if impacts and any(f"F{fund_code}:news:{group['item_index']}" in impacts for group in digest["items"]):
+        lines.append("  对基金影响幅度未知，不能据此解释已发生的净值变化。")
     coverage = bundle.get("coverage", {}) if isinstance(bundle, dict) else bundle.coverage
     status_labels = {"timeout": "新闻检索失败：请求超时", "unavailable": "新闻检索不可用",
                      "skipped_budget": "部分检索未执行：查询、时间或条数预算用尽",
@@ -386,10 +496,42 @@ def _brief_news(bundle, fallback, nav_date, *, fund_code=None, insight=None, int
             incomplete.setdefault(status, []).append(NEWS_LABELS.get(category, "相关线索"))
     for status, categories in incomplete.items():
         lines.append(f"- {'、'.join(categories)}：{status_labels[status]}。")
-    counts = digest["counts"]
-    omitted = counts.get("entity_limit", 0) + counts.get("selection_limit", 0)
-    if omitted:
-        lines.append(f"- 另有{omitted}条候选因同对象集中或篇幅未展开，完整新闻见JSON。")
+    # Raw candidate/selection counts are diagnostic detail, not another event.
+    return lines
+
+
+def _reference_brief(analysis, insight, interpretation, digest, as_of):
+    """Show dated portfolio context only where the accepted view uses it.
+
+    Never print a decorative top-name list. Historical news already supplies its
+    exact relationship/date in place, so do not repeat that same context here.
+    """
+    if insight is None or interpretation is None:
+        return []
+    statements = [*insight.conclusion, *insight.risks]
+    if insight.decision:
+        statements += [insight.decision.rationale, insight.decision.conditions, insight.decision.invalidation]
+    kinds = {interpretation.facts[key].kind for statement in statements if statement is not None
+             for key in statement.evidence_ids if key in interpretation.facts}
+    contexts = {group["reporting_context"] for group in digest["items"]}
+    data = analysis.data
+    lines = []
+    portfolio = data.holdings
+    if ("dated_holdings" in kinds and "historical_holding" not in contexts and portfolio and portfolio.holdings
+            and _known_period(portfolio.report_period_end, portfolio.published_at, as_of)):
+        total = sum(h.weight_pct for h in portfolio.holdings)
+        lines.append(f"- {_link('历史股票名单', portfolio.source_url)}：{portfolio.report_period_end} 报告期，"
+                     f"{len(portfolio.holdings)}只合计 {total:.2f}%；非当前仓位，公告日 {_text(portfolio.published_at or '未提供')}。")
+        if "联接" in data.profile.name:
+            lines.append("  联接基金股票表不等于目标ETF底层持仓；未做穿透。")
+    if "target_relationship" in kinds and "direct_target" not in contexts:
+        for asset in data.related_assets:
+            if (asset.category == "target_etf" and asset.verified
+                    and (asset.source_date is None or _known_period(asset.source_date, asset.published_at, as_of))
+                    and (asset.published_at is None or type(asset.published_at) is date and asset.published_at <= as_of)):
+                lines.append(f"- 目标ETF：{_link(asset.name, asset.source_url)}（{_text(asset.code or '代码未知')}）；"
+                             f"关系资料日期 {_text(asset.source_date or '未知')}，当前配置及底层持仓未核验。")
+                break
     return lines
 
 
@@ -400,68 +542,59 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
     """Mobile-friendly brief. Full facts, references and diagnostics stay in JSON."""
     end_day = as_of or generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
     lines = [f"# 场外基金日报｜{end_day}", "", _ai_summary(analyses, interpretation), ""]
-    known_warnings = ("口径：", "最新净值日期", "QDII净值可能", "未取得可用股票持仓", "持仓为定期报告")
+    compact_facts = _compact_facts(analyses, interpretation, end_day)
+    no_news = []
     for analysis in analyses:
         data, profile = analysis.data, analysis.data.profile
         latest = data.navs[-1]
-        lines.extend([f"## {profile.code} {_text(profile.name)}", ""])
         scope = interpretation.fund_statuses.get(profile.code) if interpretation else None
         insight = interpretation.funds.get(profile.code) if interpretation else None
         accepted = (interpretation is not None and interpretation.status in {"ok", "partial"}
                     and insight is not None and scope is not None and scope.status == "ok")
-        decision = getattr(insight, "decision", None) if accepted else None
-        repair_note = _repair_note(scope)
+        suffix = "｜仅数据" if not accepted and interpretation and interpretation.status in {"ok", "partial"} else ""
+        lines.extend([f"## {profile.code} {_text(profile.name)}{suffix}", ""])
+        age = (end_day - latest.nav_date).days
+        timing = f"；截至报告日相隔{age}个自然日" if age > 0 else ""
+        lines.append(f"单位净值 {latest.unit_nav:.6f}｜{latest.nav_date}｜{_link('净值来源', data.source_url)}{timing}。")
+        bundle = (news_evidence or {}).get(profile.code)
+        digest = select_news_digest(bundle, max_items=2) if bundle is not None else {"items": []}
+        rendered_statements, decision_lines = set(), []
         if accepted:
-            if repair_note:
-                lines.append(repair_note)
-            lines.extend(_decision_lines(insight, interpretation))
-            if decision is not None:
-                lines.extend(_statement_line(statement, interpretation, "主要风险") for statement in insight.risks[:1])
-            else:
-                lines.extend(["", "### AI基金解读（推理观点，非事实认证）", ""])
-                for key, label in INSIGHT_LABELS.items():
-                    statements = getattr(insight, key)
-                    if statements:
-                        lines.append(f"**{label}**")
-                        lines.extend(_statement_line(statement, interpretation) for statement in statements)
-        elif repair_note:
-            lines.append(repair_note)
-        elif interpretation is not None and (interpretation.status == "partial"
-                                            or interpretation.status == "ok" and scope is None):
-            lines.append(f"- AI：{_scope_label(scope)}。")
-        lines.append(f"- 最新已披露单位净值：{latest.unit_nav:.6f}（{latest.nav_date}）；"
-                     f"{_link('净值来源', data.source_url)}。")
-        recent = _valid_metric(analysis, "return_1m")
-        if recent:
-            lines.append(f"- **近期净值变化：{_percent(recent.value)}**"
-                         f"（{_period_dates(recent.start_date, recent.end_date, end_day)}，{(recent.end_date - recent.start_date).days}天）。")
-        else:
-            lines.append(_metric_line(analysis, "return_1m", end_day))
-        pattern = _period_pattern(analysis) if not accepted else None
-        if pattern:
-            lines.append("- **区间观察**：" + pattern)
-        metric_keys = (("return_3m", "max_drawdown_12m") if decision is not None else
-                       ("return_1d", "return_3m", "return_6m", "return_12m", "max_drawdown_12m"))
-        for key in metric_keys:
-            lines.append(_metric_line(analysis, key, end_day))
-        lines.extend(_holding_brief(data, end_day))
-        for warning in dict.fromkeys([*data.warnings, *analysis.warnings]):
-            if not warning.startswith(known_warnings):
-                lines.append(f"- 数据提醒：{_text(warning)}")
-        lines.extend(_brief_news((news_evidence or {}).get(profile.code), news.get(profile.code), latest.nav_date,
+            decision_lines, rendered_statements = _decision_lines(insight, interpretation, compact_facts=compact_facts)
+        # A resolved metric placeholder is already a dated program fact in
+        # the judgment. Do not print it again as a separate fact row.
+        shown_metrics = {key for key in METRIC_LABELS
+                         if (fact_text := compact_facts.get(f"F{profile.code}:{key}"))
+                         and any(_text(fact_text) in line for line in decision_lines)}
+        lines.extend(_metric_brief(analysis, end_day, shown_metrics=shown_metrics))
+        lines.extend(decision_lines)
+        if accepted:
+            lines.extend(_reference_brief(analysis, insight, interpretation, digest, end_day))
+        if profile.is_qdii:
+            lines.append("- QDII：海外估值、假期与汇率可能错位；所列变化截至净值日。")
+        for warning in _material_warnings(analysis):
+            lines.append(f"- 数据提醒：{_text(warning)}")
+        lines.extend(_brief_news(bundle, news.get(profile.code), latest.nav_date,
                                  fund_code=profile.code, insight=insight if accepted else None,
-                                 interpretation=interpretation if accepted else None))
+                                 interpretation=interpretation if accepted else None, digest=digest,
+                                 rendered_statements=rendered_statements, compact_facts=compact_facts,
+                                 is_feeder="联接" in profile.name))
+        if bundle is not None and not digest["items"]:
+            no_news.append(profile.code)
         lines.append("")
     if interpretation is not None and interpretation.status in {"ok", "partial"}:
         if interpretation.comparison_status.status == "ok" and interpretation.comparison:
-            lines.extend(["## AI横向观察（推理观点）", ""])
-            lines.extend(_statement_line(statement, interpretation) for statement in interpretation.comparison)
+            lines.extend(["## 横向观察", ""])
+            lines.extend(_statement_line(statement, interpretation, compact_facts=compact_facts)
+                         for statement in interpretation.comparison)
             lines.append("")
-    lines.extend(_historical_intersections(analyses, end_day))
+    if no_news:
+        lines.extend([f"未取得可分析关联新闻：{'、'.join(no_news)}；不代表没有相关事件。", ""])
     if failed:
         lines.extend(["## 数据获取或校验失败", ""])
         lines.extend(f"- fund:{_text(code)}：{_text(reason)}" for code, reason in failed.items())
         lines.append("")
+    lines.append("口径：单位净值变化，非红利再投资总回报；同源接口核对不等于独立复核。")
     if interpretation is not None and (interpretation.provider or interpretation.model):
         lines.append(f"实际模型：{_text(interpretation.model or '未返回')}；供应方：{_text(interpretation.provider or '未返回')}。")
     if interpretation is not None:

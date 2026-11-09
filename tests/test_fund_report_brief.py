@@ -14,6 +14,7 @@ from src.core.fund_analysis import (
 from src.services.fund_analysis_service import render_fund_report, run_fund_analysis
 from src.services.fund_interpretation import (
     EvidenceFact, FundInsight, FundInterpretation, InterpretationScopeStatus, Statement,
+    ResearchDecision, NewsImpact, NewsAssessment, _build_context,
 )
 
 FIXTURE = Path(__file__).parent / 'fixtures/fund_brief_run10.json'
@@ -51,9 +52,25 @@ def load_snapshot(path=FIXTURE):
     raw = copy.deepcopy(saved['interpretation'])
     raw['fund_statuses'] = {code: InterpretationScopeStatus(**scope) for code, scope in raw['fund_statuses'].items()}
     raw['comparison_status'] = InterpretationScopeStatus(**raw['comparison_status'])
-    raw['facts'] = {key: EvidenceFact(**fact) for key, fact in raw['facts'].items()}
-    raw['funds'] = {key: FundInsight(**{name: [Statement(**s) for s in values] for name, values in insight.items()})
-                    for key, insight in raw['funds'].items()}
+    raw['facts'] = ({key: EvidenceFact(**fact) for key, fact in raw['facts'].items()}
+                    if 'facts' in raw else _build_context(analyses, saved.get('news_evidence'))[0])
+    converted = {}
+    for code, insight in raw['funds'].items():
+        values = {key: [Statement(**entry) for entry in insight.get(key, [])]
+                  for key in ('conclusion', 'risks', 'evidence', 'observations')}
+        decision = insight.get('decision')
+        if decision is not None:
+            values['decision'] = ResearchDecision(**{
+                **decision, **{key: Statement(**decision[key]) if decision[key] is not None else None
+                               for key in ('rationale', 'conditions', 'invalidation')}})
+        values['news_impacts'] = [NewsImpact(**{**item, 'transmission': Statement(**item['transmission'])})
+                                  for item in insight.get('news_impacts', [])]
+        assessment = insight.get('news_assessment')
+        if assessment is not None:
+            values['news_assessment'] = NewsAssessment(assessment['status'],
+                Statement(**assessment['explanation']) if assessment['explanation'] is not None else None)
+        converted[code] = FundInsight(**values)
+    raw['funds'] = converted
     raw['comparison'] = [Statement(**s) for s in raw['comparison']]
     return saved, analyses, FundInterpretation(**raw)
 
@@ -81,8 +98,10 @@ def test_retained_brief_starts_with_fund_changes_not_boilerplate():
         m = a.metrics['return_1m']
         assert f'{m.value * 100:+.2f}%' in text
         assert f'{a.data.navs[-1].unit_nav:.6f}' in text
-    assert text.count('## ') == 7
-    assert 90 <= len(text.splitlines()) <= 150
+    assert text.count('## ') == 6
+    assert '历史名单交集' not in text
+    assert len(text.splitlines()) < 90
+    assert text.count('相邻净值变化：') == 6
     assert '| ---' not in text and '<table' not in text
     visible = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
     assert max(map(len, visible.splitlines())) < 120
@@ -94,13 +113,16 @@ def test_retained_brief_starts_with_fund_changes_not_boilerplate():
 def test_retained_news_dates_and_historical_relationships_are_explicit():
     text, saved, _ = render_retained()
     assert text.count('晚于所列净值日，仅作后续线索') == 4
-    assert '2026-09-30 报告期的10只股票合计 2.75%' in text
-    assert '不等于目标ETF底层持仓' in text
-    assert '关系资料日期 未知' in text
+    assert '2026-09-30 历史股票名单中的中微公司' in text
+    assert '是否仍持有未核验' in text
+    assert '联接基金股票表未穿透目标ETF' in text
+    assert '2026-11-05' in text and 'QDII：海外估值、假期与汇率' in text
     assert text.count('同主体同日相近线索合并2条来源') == 1
     assert '董事会会议决议' not in text
     assert len(saved['news_evidence']['024480']['items']) == 2
-    assert '配置来源' in text and '持仓来源' in text
+    assert '关系来源' in text
+    assert 'FundArchivesDatas.aspx?type=jjcc&code=020356' in text
+    assert len(saved['analyses'][2]['data']['holdings']['holdings']) == 10
     assert '当前持仓' not in text and '导致' not in text
 
 
@@ -186,7 +208,9 @@ def test_news_incomplete_coverage_does_not_invent_a_failure_cause():
     text, _, _ = render_retained()
     assert '产品名称主题：部分检索未执行：查询、时间或条数预算用尽' in text
     assert '新闻检索失败' not in text and '未配置新闻检索' not in text
-    assert text.index('**区间观察**') < text.index('约3个月净值变化')
+    assert text.index('约1个月净值变化') < text.index('产品名称主题：部分检索未执行')
+    assert '**区间观察**' not in text
+    assert '约3个月净值变化' not in text  # No fallback dump of every metric window.
 
 
 @pytest.mark.parametrize('period', [None, date(2026, 12, 31)])
