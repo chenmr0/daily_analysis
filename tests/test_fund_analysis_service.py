@@ -97,11 +97,13 @@ def test_news_reuses_topic_search_filters_identity_and_rejects_script_links(tmp_
         SimpleNamespace(title="无关股票", snippet="不相关", url="https://example.com/stock", source="x", published_date=None),
     ])
     report = run_fund_analysis("001672", fetcher=fetcher, search_service=search, output_dir=tmp_path)
-    assert "示例基金A基金公告" in report.markdown
+    assert "示例基金A基金公告" not in report.markdown
     assert "无关股票" not in report.markdown
     assert "javascript:" not in report.markdown
     assert "<script>" not in report.markdown
-    search.search_topic_news_bounded.assert_called_once()
+    assert search.search_topic_news_bounded.call_count == 2
+    saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    assert saved["news_evidence"]["001672"]["items"] == []
     search.search_stock_news.assert_not_called()
 
 
@@ -201,7 +203,7 @@ def test_news_requires_full_fund_identity_in_headline(tmp_path, code, name, titl
     report = run_fund_analysis(code, fetcher=fetcher, search_service=search, output_dir=tmp_path)
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
     news = saved["news"][code]
-    assert len(news) == 1
+    assert len(saved["news_evidence"][code]["items"]) == int(accepted)
     assert ("关联依据：标题含本基金全名" in news[0]) is accepted
     assert ("未找到通过本基金身份匹配" in news[0]) is not accepted
     assert "标题或摘要" not in report.markdown
@@ -209,6 +211,91 @@ def test_news_requires_full_fund_identity_in_headline(tmp_path, code, name, titl
         assert "example.com/news" in news[0]
         assert "来源：example.com" in news[0]
         assert "发布日期：2026-11-06" in news[0]
-    search.search_topic_news_bounded.assert_called_once_with(
-        name, max_results=5, focus_keywords=[f'"{name}"', f'"{code}"', "基金 公告"], timeout_seconds=12.0,
-    )
+    assert search.search_topic_news_bounded.call_count == 2
+    for call in search.search_topic_news_bounded.call_args_list:
+        assert call.args[0] == name
+        assert call.kwargs["timeout_seconds"] <= 12.0
+    assert set(saved["news_evidence"][code]["coverage"]) >= {"announcement", "direct_fund", "target_etf", "holding", "industry"}
+
+
+def test_unexpected_news_component_error_keeps_nav_and_degrades(tmp_path):
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    with patch("src.services.fund_analysis_service.gather_fund_news", side_effect=RuntimeError("private raw detail")):
+        report = run_fund_analysis("001672", fetcher=fetcher, search_service=Mock(), output_dir=tmp_path)
+    assert not report.failed_codes and len(report.analyses) == 1
+    assert "新闻组件不可用" in report.markdown
+    assert "private raw detail" not in report.markdown
+
+
+def test_interpretation_persists_model_and_cited_sections(tmp_path):
+    from src.services.fund_interpretation import EvidenceFact, FundInsight, FundInterpretation, Statement
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    fact = EvidenceFact("F001672:nav", ["001672"], "nav", "程序净值事实", "https://example.test/nav", "2026-11-06")
+    statement = Statement("数据反映已披露状况，后续仍需观察披露变化。", [fact.evidence_id])
+    result = FundInterpretation("ok", "模型推理观点", "openai", "test-configured-model", "litellm",
+                                {"001672": FundInsight(*[[statement] for _ in range(4)])}, facts={fact.evidence_id: fact})
+    interpreter = Mock(return_value=result)
+    report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, include_interpretation=True,
+                               interpreter=interpreter, output_dir=tmp_path)
+    assert report.interpretation_status == "ok"
+    interpreter.assert_called_once()
+    assert interpreter.call_args.kwargs == {"enabled": True}
+    for text in ("核心结论", "风险提示", "后续观察", "test-configured-model", "openai", "https://example.test/nav"):
+        assert text in report.markdown
+    saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
+    assert saved["schema_version"] == 2
+    assert saved["interpretation"]["facts"][fact.evidence_id]["data_date"] == "2026-11-06"
+    assert saved["notification"]["status"] == "disabled"
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("private provider detail"), object()])
+def test_interpretation_component_failure_preserves_facts(tmp_path, failure):
+    fetcher, interpreter = Mock(), Mock()
+    fetcher.fetch.return_value = sample()
+    if isinstance(failure, Exception):
+        interpreter.side_effect = failure
+    else:
+        interpreter.return_value = failure
+    report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, include_interpretation=True,
+                               interpreter=interpreter, output_dir=tmp_path)
+    assert not report.failed_codes and report.interpretation_status == "model_failed"
+    assert "1.100000" in report.markdown and "未生成可采用的模型结论" in report.markdown
+    assert "private provider detail" not in report.markdown
+
+
+def test_default_service_and_historical_analysis_do_not_request_model(tmp_path):
+    from src.services.fund_interpretation import FundInterpretation
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    interpreter = Mock(side_effect=lambda *args, **kwargs: FundInterpretation("disabled", "disabled"))
+    run_fund_analysis("001672", fetcher=fetcher, include_news=False, interpreter=interpreter, output_dir=tmp_path)
+    assert interpreter.call_args.kwargs["enabled"] is False
+    report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, interpreter=interpreter,
+                               include_interpretation=True, as_of=date(2026, 11, 6), output_dir=tmp_path)
+    assert interpreter.call_args.kwargs["enabled"] is False
+    assert "历史截止日不混入" in report.markdown
+
+
+def test_real_interpretation_adapter_resolves_program_facts_in_report(tmp_path):
+    from functools import partial
+    from src.services.fund_interpretation import interpret_funds
+    from src.llm.generation_backend import GenerationResult
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    statement = {"text": "已披露资料可用于观察历史情况：{{F001672:nav}}", "evidence_ids": ["F001672:nav"]}
+    payload = {"funds": [{"fund_code": "001672", **{key: [statement] for key in ("conclusion", "risks", "evidence", "observations")}}], "comparison": []}
+    analyzer = Mock()
+    analyzer.get_generation_backend_identity.return_value = ("litellm", "openai/test")
+    analyzer.is_available.return_value = True
+    analyzer.generate_text_with_metadata.return_value = GenerationResult(json.dumps(payload), "test-model", "openai", "litellm", {})
+    config = SimpleNamespace(generation_backend="litellm", generation_fallback_backend="", litellm_model="openai/test",
+                             litellm_fallback_models=[], llm_model_list=[], openai_base_url="")
+    interpreter = partial(interpret_funds, config=config, analyzer_factory=lambda **kwargs: analyzer)
+    report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, include_interpretation=True,
+                               interpreter=interpreter, output_dir=tmp_path)
+    assert report.interpretation_status == "ok"
+    assert "{{" not in report.markdown and "test-model" in report.markdown
+    assert "2026-11-06" in report.markdown
+    analyzer.generate_text_with_metadata.assert_called_once()

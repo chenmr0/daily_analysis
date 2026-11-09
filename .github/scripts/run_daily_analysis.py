@@ -46,6 +46,9 @@ def plan_command(env: Mapping[str, str]) -> tuple[list[str], list[str]]:
     force_run = _boolean(env, "ANALYSIS_FORCE_RUN")
     no_notify = _boolean(env, "ANALYSIS_NO_NOTIFY")
     no_news = _boolean(env, "ANALYSIS_FUND_NO_NEWS")
+    no_ai = _boolean(env, "ANALYSIS_FUND_NO_AI")
+    if no_ai and mode != "funds-only":
+        raise ValueError("fund_no_ai requires funds-only mode")
     if no_news and mode != "funds-only":
         raise ValueError("fund_no_news requires funds-only mode")
     fund_codes = env.get("ANALYSIS_FUND_CODES", "")
@@ -66,6 +69,8 @@ def plan_command(env: Mapping[str, str]) -> tuple[list[str], list[str]]:
         command.append("--no-notify")
     if no_news:
         command.append("--fund-no-news")
+    if no_ai:
+        command.append("--fund-no-ai")
     return command, notices
 
 

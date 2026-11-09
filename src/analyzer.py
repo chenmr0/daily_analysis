@@ -3967,13 +3967,22 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         prompt: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        *,
+        timeout_seconds: Optional[float] = None,
+        system_prompt: Optional[str] = None,
     ) -> Optional[GenerationResult]:
         """Generate text and return the actual backend/model used for diagnostics."""
+        generation_config = {"max_tokens": max_tokens, "temperature": temperature}
+        if timeout_seconds is not None:
+            if isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+                raise ValueError("timeout_seconds must be finite and positive")
+            generation_config["timeout"] = timeout_seconds
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config=generation_config,
                 return_generation_result=True,
+                **({"system_prompt": system_prompt} if system_prompt is not None else {}),
             )
             if not isinstance(result, GenerationResult):
                 raise TypeError("generation backend returned an invalid result")

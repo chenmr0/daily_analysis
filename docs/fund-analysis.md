@@ -1,4 +1,4 @@
-# 场外基金已披露净值日报（CLI / Actions MVP）
+# 场外基金净值与AI解读日报（CLI / Actions）
 
 场外基金使用独立身份 `fund:六位代码` 和净值数据契约，不进入股票/场内ETF的 OHLCV、技术择时、LLM评级、止损点或回测链路。裸六位股票代码原有含义保持不变；不要把场外基金代码放进 `STOCK_LIST`。
 
@@ -9,12 +9,12 @@
 ```bash
 # 可选：在 .env 或进程环境配置 FUND_LIST；配置本身不启用分析/定时
 # FUND_LIST=021190,018123,020356,001672,025500,024480
-python main.py --funds --no-notify --fund-no-news
+python main.py --funds --no-notify --fund-no-news --fund-no-ai
 
-# 显式代码覆盖 FUND_LIST；首次验收不发通知，不检索新闻
-python main.py --funds 021190,018123,020356,001672,025500,024480 --no-notify --fund-no-news
+# 显式代码覆盖 FUND_LIST；首次数据验收不发通知，不检索新闻，不调用模型
+python main.py --funds 021190,018123,020356,001672,025500,024480 --no-notify --fund-no-news --fund-no-ai
 
-# 显式基金身份等价写法；复用已配置新闻检索，但不发送
+# 显式基金身份等价写法；复用已配置云端模型与新闻检索，但不发送
 python main.py --funds fund:001672,fund:020356 --no-notify
 
 # 复用现有通知配置，包括邮件；运行前确认收件人和所有启用渠道
@@ -22,11 +22,11 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 ```
 
 - `--funds` 是独立的一次性模式，不能同时指定股票、券商持仓、定时、大盘复盘、ETF轮动、回测或 Web 服务模式。
-- `--fund-no-news` 只在基金模式有效。`--dry-run` 在基金模式同时禁止新闻和通知，仍读取正式净值并生成确定性报告。
+- `--fund-no-news` 和 `--fund-no-ai` 只在基金模式有效，分别跳过新闻和AI，互不影响。`--dry-run` 在基金模式同时禁止新闻、AI和通知，仍读取正式净值并生成数据报告。
 - 不带代码的 `--funds` 读取 `FUND_LIST`；显式代码覆盖配置。进程环境优先于 `.env`，空或非法清单报错，不回退到股票。
 - `FUND_LIST` 不修改 `STOCK_LIST`，普通股票启动不消费它，错误的未使用基金清单也不会阻断股票。
-- 无需 LLM key，不调用本地 Codex 或 LLM。
-- 报告保存为 `reports/fund_report_<UTC时间戳>.md`，同名 JSON 保存独立基金身份、资料、净值历史、指标、来源、抓取时间、新闻和失败项。不会写入股票 `StockDaily` 或分析历史表。
+- CLI基金模式默认尝试云端AI解读，复用现有模型/渠道配置；没有可用密钥或模型失败时明确降级为程序数据报告。`--fund-no-ai` 的纯数据模式不需要LLM密钥。基金模式拒绝本地Codex、Claude Code、OpenCode生成及本地回退；模型地址要求HTTPS和公开地址语法，拒绝私网、回环和已知本地别名。不解析DNS，也不证明公开域名背后的实际部署位置。
+- 报告保存为 `reports/fund_report_<UTC时间戳>.md`，同名 JSON 保存独立基金身份、资料、净值历史、指标、来源、抓取时间、新闻和失败项。JSON `schema_version=2` 增加 `news_evidence`（来源/关系/时效/覆盖）及 `interpretation`（状态、实际模型、事实引用、单基金解读和横向观察），保留原 `news` 文本。不会写入股票 `StockDaily` 或分析历史表。
 - 一只基金失败仍保存其他基金及失败原因；有基金失败时 CLI 返回 1。通知全部/部分失败、无可用通知渠道或结果不确定也返回 1；主动禁用通知和配置中的降噪抑制不视为失败。
 - 通知结果记录在日志和JSON的 `notification`（状态、渠道成功标记、错误代码），不保存邮件账号凭证。失败/结果不确定均不由本模块重发；SMTP接收成功仍不等于收件箱已送达。
 - 通知沿用 `report` 路由与默认收件人，**不使用股票代码分组**、不向所有邮件分组广播。基金邮件使用基金主题。已有股票/ETF的默认主题和路由不变。
@@ -38,10 +38,12 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 1. 可在 Settings → Secrets and variables → Actions → Repository variables 配置 `FUND_LIST`；同名Secret作为后备。不要改动原 `STOCK_LIST`。
 2. Actions → 每日股票分析 → Run workflow，选择目标分支和 `mode=funds-only`。
 3. `fund_codes` 可填本次六位基金代码以覆盖 `FUND_LIST`；留空使用配置。该输入只在基金模式有效。
-4. 首次只验收时勾选 `no_notify`、`fund_no_news`。要使用现有新闻与通知，保持两者false，先确认原有邮件收件人与 `NOTIFICATION_REPORT_CHANNELS` 配置。
-5. 从本次Run的 `analysis-reports-<运行编号>` artifact读取Markdown、JSON及日志。任务只调用一次基金入口，不再运行股票或大盘、不逐基金重复推送。
+4. 首次纯数据验收勾选 `no_notify`、`fund_no_news`、`fund_no_ai`。完整AI报告仅预览时只勾选 `no_notify`，其余两项false；发送前核对原有收件人与 `NOTIFICATION_REPORT_CHANNELS`。
+5. `funds-only` 在股票交易日检查前进入独立路径，非交易日也可读取最新已披露净值，`force_run` 可保持false，不会补造当天净值。
+6. 功能未合入main前，Use workflow from 选择 `feature/off-exchange-fund-mvp`，否则运行的是所选分支自己的代码。
+7. 从本次Run的 `analysis-reports-<运行编号>` artifact读取Markdown、JSON及日志。任务只调用一次基金入口，不再运行股票或大盘、不逐基金重复推送。
 
-既有新闻key、邮件Secrets和通知路由原样复用，不新增密钥、不改收件人。未配置新闻只提示不可用，不影响确定性净值报告；未配置通知且请求发送则任务返回失败。
+既有云端模型配置、新闻key、邮件Secrets和通知路由原样复用，不新增密钥、不改收件人。未配置新闻只提示不可用，不影响确定性净值报告；未配置通知且请求发送则任务返回失败。
 
 **防重复边界：** 同一GitHub Run的 Re-run（`github.run_attempt>1`）在基金模式强制 `--no-notify`，无论首次是部分成功还是发送结果未知，都不会自动再发。需要再次发送应检查前次状态后新建一次 Run workflow。新Run仍可能发送相同净值，这是明确的新请求；本版不承诺所有跨Run情况严格只投递一次。
 
@@ -55,6 +57,8 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 2. `api.fund.eastmoney.com/f10/lsjz`：核对最新净值日期及数值。与第一项同源，不是独立双源容灾。不一致阻止该基金分析；该接口不可用时明确提示仅有单端点数据。
 3. `fundf10.eastmoney.com/jbgk_{code}.html`：类型、成立日期等当前资料。标题校验基金全名及代码；请求失败、身份校验失败或类型/成立日期/经理缺失时，至多增加一个同源备用页面 `fund.eastmoney.com/{code}.html`，先校验身份，再限定解析基金资料表。保留主来源错误类别/HTTP状态和实际采用的来源链接；备用也失败就保留已有可信字段并标明缺失，不用旧资料补值。币种未核验时不猜测。
 4. `FundArchivesDatas.aspx?type=jjcc`：最近披露股票明细及报告期末。缺数据不等于零持仓；报告期末不等于公告日，真实公告日期缺失时保留未知。
+5. 基金首页标题区域“查看相关ETF”链接：仅ETF联接产品读取，再访问目标页核验代码/名称/ETF类型。核验的是目标身份，不是配置比例或底层穿透，关系披露时间缺失保持未知。
+6. `api.fund.eastmoney.com/f10/HYPZ/?fundCode={code}&year=`：核验基金代码、名称、行业行及报告期，读取最新已披露行业比例。拒绝错基金、未来报告期和无效比例；报告期不等于实际披露日期。
 
 请求有超时、重试次数和响应大小上限，校验 HTTP 正文契约、代码一致性、非有限值、净值日期、重复日期及两端点冲突。只用 JSON 字面量解析，不执行外部 JavaScript。不使用盘中估值或估值回填正式净值。
 
@@ -76,7 +80,28 @@ QDII显示实际净值日期、数据年龄和延迟提示，不硬编码“T+2�
 
 持仓只代表所标报告期。联接基金股票明细并不覆盖目标ETF及其底层持仓，未穿透或做涨跌归因；没有公布日期的资料不能用于历史时点回测。当前快照的经理等资料也不能作为历史资料。
 
-复用现有有时限的题材新闻搜索，查询基金全名与代码；仅展示标题包含完整基金名称及份额类别的结果；统一全半角、HTML实体和空白后匹配，A/C等份额不混用。只在摘要出现基金名或只有数字代码均不通过（可避免搜索摘要夹带基金名而正文主题无关的网页）、发布日期（缺失则明确）和来源链接。严格标题匹配会漏掉没有写全名的相关报道；新闻仅提供线索，不自动认定事件真实或解释净值涨跌。检索失败不影响净值报告。标题等外部文本进行HTML/Markdown转义，不允许脚本链接。
+新闻使用现有有时限的搜索服务，按证据关系分开检索：
+
+- 基金公告及直接新闻：标题含完整基金名称与份额类别，统一全半角、HTML实体和空白；代码或摘要单独出现均不通过。公告仅是相关检索线索，未声称核对管理人原文。
+- 目标ETF：只用基金标题区域链接和目标页双重身份核验的关系，缺关系不猜测。
+- 已披露重仓：选明细中权重最大的至多两项；名称和原样代码保留在查询/来源中。短名称或常见单词必须在标题同时出现原代码和金融/公司语境，不猜别名或市场，较长名称也要求公司语境。保留报告期及披露日期未知标记，不证明现阶段仍持有或造成涨跌。
+- 行业：优先带报告期的行业配置；缺配置时仅用产品名称中明确主题词，并注明“名称主题，非持仓配置”。行业/主题标题也需行业语境，不据此核验公司身份。
+
+每基金最多六次检索、总等待三十六秒、单次最多十二秒、总计最多十条去重结果。对已返回的最多五个候选先筛身份/URL，再优先保留有效期内的新闻，其他日期仅作为警示线索；公告/直接新闻各最多一条，避免占满关联新闻配额。每条保存来源、发布日期、抓取时间、关联依据和资料日期。`fresh/stale/unknown/future` 明确区分时效，只有fresh标题进入模型当前事件证据。各类别覆盖状态区分未配置、无关系、无结果、过滤、超时或预算不足，不把“未找到”解释为“没有风险”。拒绝脚本、私网及异常链接；外部文本经HTML/Markdown转义。
+
+严格匹配可能漏报；标题不等于事实核验。新闻失败不丢弃有效净值。
+
+## 云端AI解读与横向比较
+
+通过现有 `GeminiAnalyzer.generate_text_with_metadata` 公共接口复用云端LiteLLM模型及配置的云端回退，不是给规则模板改名。虽然接口类名含Gemini，实际可配置OpenAI、Gemini、Anthropic等，报告显示实际返回模型/供应方/后端，不冒称GPT。需要GPT时使用项目现有OpenAI云端配置，不增加基金专用新密钥。
+
+一批基金一次请求，生成每只核心结论、风险、证据、后续观察及横向观察。程序先计算事实，模型以事实ID占位引用数字、日期、代码，另行撰写中文定性解释。引用、结构、基金归属、数量词、方向和当前持仓等经过保守检查，失败整批弃用模型结论并保留数据。自然语言检查不是事实证明，仍可能遗漏量化/时态错误，也可能拒绝合理文字；报告明确标记AI观点，关键判断应回查原始证据。
+
+横向表只并列净值日期与真实指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
+
+状态 `ok/disabled/unavailable/model_failed` 均有原因。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
+
+最多二十只基金、提示词一百五十KB、输出四十八KB、输出token上限六千。默认报告等待四十五秒，单进程只有一个未结束请求。等待期限不是网络硬取消：已有云端请求或配置回退可能继续至底层超时并产生费用；迟到结果不采用，也不补发报告或邮件。
 
 ## 已知范围限制
 
@@ -88,14 +113,16 @@ QDII显示实际净值日期、数据年龄和延迟提示，不硬编码“T+2�
 ## 验证与部署注意
 
 ```bash
-python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/test_fund_analysis_service.py tests/test_main_funds.py tests/test_fund_config.py tests/test_daily_fund_workflow.py
+python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/test_fund_analysis_service.py tests/test_fund_news_service.py tests/test_fund_interpretation.py tests/test_main_funds.py tests/test_fund_config.py tests/test_daily_fund_workflow.py
 ./scripts/ci_gate.sh
 ```
 
-首次数据接口验收使用 `--no-notify --fund-no-news`，只有确认通知配置后再开启推送。离线测试使用合成数据，不用某天的真实行情当永久预期值。
+首次数据接口验收使用 `--no-notify --fund-no-news --fund-no-ai`，只有确认通知配置后再开启推送。离线测试使用合成数据，不用某天的真实行情当永久预期值。
 
 现有项目配置在检测到 `HTTP_PROXY` 时会把 `eastmoney.com` 加进 `NO_PROXY`。如果部署环境只能通过HTTPS代理出站，可能出现“单独接口成功、main入口失败”；应按环境需求配置代理（例如仅配置所需 `HTTPS_PROXY`，避免触发该既有直连规则）。本次改造未改动全项目代理策略，也不会关闭TLS校验。
 
 ## English summary
 
-This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange fund NAV reports. Use `--funds` (optionally reading `FUND_LIST`), never `STOCK_LIST`. Manual `funds-only` dispatch accepts a one-time `fund_codes` override; fund reruns suppress notifications. No fund cron is added or enabled, and the original stock schedule is unchanged. Existing stock/ETF routes remain unchanged. Run with `--no-notify --fund-no-news` for safe live validation. It saves separate Markdown/JSON artifacts, validates identity and dates, and reuses existing news and notification services. News requires the complete fund/share-class identity in the headline; snippet-only matches are rejected, at the cost of lower recall. Return metrics are conservative event-free unit-NAV changes, not a claimed reinvested total-return series. Distributions, missing data and insufficient history produce N/A. QDII publication lags and dated holdings are explicit. Web/API/scheduling, look-through, subscriptions/redemptions, trading and backtesting are out of scope. Fund profile failures use one identity-checked same-provider homepage fallback, preserving diagnostics and missing-field warnings. All data currently comes from the same Eastmoney source family.
+This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange fund NAV reports. Use `--funds` (optionally reading `FUND_LIST`), never `STOCK_LIST`. Manual `funds-only` dispatch accepts a one-time `fund_codes` override; fund reruns suppress notifications. No fund cron is added or enabled, and the original stock schedule is unchanged. Existing stock/ETF routes remain unchanged. Run with `--no-notify --fund-no-news --fund-no-ai` for safe live validation. It saves separate Markdown/JSON artifacts, validates identity and dates, and reuses existing news and notification services. Direct news requires full fund/share-class headline identity. Related news requires verified ETF identities or dated holdings/industry relationships, issuer/sector context and freshness metadata; strict matching reduces recall. Only fresh news enters model evidence. Return metrics are conservative event-free unit-NAV changes, not a claimed reinvested total-return series. Distributions, missing data and insufficient history produce N/A. QDII publication lags and dated holdings are explicit. Web/API/scheduling, look-through, subscriptions/redemptions, trading and backtesting are out of scope. Fund profile failures use one identity-checked same-provider homepage fallback, preserving diagnostics and missing-field warnings. All data currently comes from the same Eastmoney source family.
+
+The fund CLI now attempts evidence-cited cloud narrative through the existing configured model interface; use `--fund-no-ai` or manual workflow `fund_no_ai` to disable it. Structured numeric/date placeholders are program-owned. Conservative free-prose checks do not guarantee semantic truth or eliminate every quantitative/temporal error. Actual model/provider identity and explicit degradation states are reported. No local CLI backend or private/plain-HTTP model endpoint is allowed. Endpoint validation does not resolve DNS. The report deadline is not hard cancellation of an in-flight cloud request. Model/provider-boundary mocks do not constitute live API validation.

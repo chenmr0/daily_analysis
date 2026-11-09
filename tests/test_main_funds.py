@@ -27,12 +27,13 @@ def test_fund_prefix_never_becomes_stock():
     assert parse_analysis_target('510300').asset_type == ParseStatus.STOCK
 
 
-@pytest.mark.parametrize('flags,send,news', [
-    (['--no-notify'], False, True),
-    (['--dry-run'], False, False),
-    (['--fund-no-news'], True, False),
+@pytest.mark.parametrize('flags,send,news,ai', [
+    (['--no-notify'], False, True, True),
+    (['--dry-run'], False, False, False),
+    (['--fund-no-news'], True, False, True),
+    (['--fund-no-ai'], True, True, False),
 ])
-def test_main_fund_path_bypasses_stock_runtime(flags, send, news):
+def test_main_fund_path_bypasses_stock_runtime(flags, send, news, ai):
     config = SimpleNamespace(log_dir='logs')
     report = SimpleNamespace(analyses=[object()], failed_codes={}, notification_status='disabled')
     with patch.object(sys, 'argv', ['main.py', '--funds', '001672', *flags]), \
@@ -42,7 +43,7 @@ def test_main_fund_path_bypasses_stock_runtime(flags, send, news):
             patch.object(main, 'run_full_analysis', side_effect=AssertionError('no stocks')), \
             patch('src.services.fund_analysis_service.run_fund_analysis', return_value=report) as runner:
         assert main.main() == 0
-        runner.assert_called_once_with('001672', send_notification=send, include_news=news)
+        runner.assert_called_once_with('001672', send_notification=send, include_news=news, include_interpretation=ai)
 
 
 def test_fund_no_news_requires_fund_mode():
@@ -76,7 +77,7 @@ def test_bare_fund_switch_resolves_config_once_without_stock_runtime():
             patch.object(main, 'run_full_analysis', side_effect=AssertionError('no stocks')), \
             patch('src.services.fund_analysis_service.run_fund_analysis', return_value=report) as runner:
         assert main.main() == 0
-        runner.assert_called_once_with(['001672', '021190'], send_notification=False, include_news=False)
+        runner.assert_called_once_with(['001672', '021190'], send_notification=False, include_news=False, include_interpretation=True)
 
 
 @pytest.mark.parametrize('funds', [[], ['invalid'], ['001672.SH']])
@@ -99,7 +100,7 @@ def test_explicit_fund_codes_override_invalid_fund_config():
             patch.object(main, 'get_config', return_value=config), \
             patch('src.services.fund_analysis_service.run_fund_analysis', return_value=report) as runner:
         assert main.main() == 0
-        runner.assert_called_once_with('001672', send_notification=False, include_news=True)
+        runner.assert_called_once_with('001672', send_notification=False, include_news=True, include_interpretation=True)
 
 
 @pytest.mark.parametrize('status', ['unknown', 'all_failed', 'partial_failed', 'unavailable', 'no_channel'])
@@ -111,3 +112,8 @@ def test_fund_notification_failure_is_not_a_green_actions_run(status):
             patch.object(main, 'get_config', return_value=config), \
             patch('src.services.fund_analysis_service.run_fund_analysis', return_value=report):
         assert main.main() == 1
+
+
+def test_fund_no_ai_requires_fund_mode():
+    with patch.object(sys, 'argv', ['main.py', '--fund-no-ai']), pytest.raises(SystemExit):
+        main.parse_arguments()

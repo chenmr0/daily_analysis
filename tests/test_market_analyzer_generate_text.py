@@ -4998,3 +4998,31 @@ Index text.
         assert violations == [], (
             f"market_analyzer.py still accesses private Analyzer attributes: {violations}"
         )
+
+
+def test_generate_text_metadata_optional_deadline_and_fund_prompt_are_scoped():
+    from src.analyzer import GeminiAnalyzer
+    from src.llm.generation_backend import GenerationResult
+    analyzer = object.__new__(GeminiAnalyzer)
+    analyzer._call_litellm = MagicMock(return_value=GenerationResult("text", "test-model", "openai", "litellm", {}))
+    result = analyzer.generate_text_with_metadata("fund prompt", timeout_seconds=12.5, system_prompt="基金助手")
+    assert result.text == "text"
+    analyzer._call_litellm.assert_called_once_with(
+        "fund prompt", generation_config={"max_tokens": 2048, "temperature": 0.7, "timeout": 12.5},
+        return_generation_result=True, system_prompt="基金助手",
+    )
+    analyzer._call_litellm.reset_mock()
+    analyzer.generate_text_with_metadata("stock prompt")
+    analyzer._call_litellm.assert_called_once_with(
+        "stock prompt", generation_config={"max_tokens": 2048, "temperature": 0.7}, return_generation_result=True,
+    )
+
+
+@pytest.mark.parametrize("deadline", [0, -1, float("nan"), float("inf"), True])
+def test_generate_text_metadata_rejects_invalid_deadline_before_call(deadline):
+    from src.analyzer import GeminiAnalyzer
+    analyzer = object.__new__(GeminiAnalyzer)
+    analyzer._call_litellm = MagicMock()
+    with pytest.raises(ValueError):
+        analyzer.generate_text_with_metadata("prompt", timeout_seconds=deadline)
+    analyzer._call_litellm.assert_not_called()

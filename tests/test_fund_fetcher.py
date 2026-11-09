@@ -242,3 +242,78 @@ class FundFetcherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FundRelatedSourceTests(unittest.TestCase):
+    @staticmethod
+    def industry(code=CODE, name="测试基金C", period="2026-09-30", weight="35.5"):
+        return json.dumps({"ErrCode": 0, "Data": {"FundCode": code, "ShortName": name,
+            "QuarterInfos": [{"JZRQ": period, "HYPZInfo": [{"BZDM": code, "SHORTNAME": name,
+                "FSRQ": period, "HYMC": "制造业", "ZJZBL": weight}]}]}})
+
+    def test_industry_identity_report_period_weight_and_unknown_publication(self):
+        from src.core.fund_analysis import FundProfile
+        assets = FundFetcher._industry_assets(self.industry(), FundProfile(CODE, "测试基金C"),
+                                             "https://example.com/industry", date(2026, 11, 9))
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].source_date, date(2026, 9, 30))
+        self.assertEqual(assets[0].weight_pct, 35.5)
+        self.assertTrue(assets[0].verified)
+        self.assertIsNone(assets[0].published_at)
+
+    def test_industry_wrong_class_fund_future_and_nonfinite_fail(self):
+        from src.core.fund_analysis import FundProfile
+        for payload in [self.industry(code="999999"), self.industry(name="测试基金A"),
+                        self.industry(period="2027-01-01"), self.industry(weight="NaN"), self.industry(weight="101")]:
+            with self.subTest(payload=payload), self.assertRaises(FundDataError):
+                FundFetcher._industry_assets(payload, FundProfile(CODE, "测试基金C"),
+                                             "https://example.com/industry", date(2026, 11, 9))
+
+    def test_target_link_bound_to_heading_and_identity_not_sidebar(self):
+        from src.core.fund_analysis import FundProfile
+        profile = FundProfile(CODE, "测试ETF联接C")
+        head = '<title>测试ETF联接C(001234)基金净值</title>'
+        heading = ('<div class="fundDetail-tit"><div>测试ETF联接C(001234)</div>'
+                   '<a href="http://fund.eastmoney.com/159999.html">查看相关ETF&gt;</a></div>'
+                   '<div class="fundDetail-tools">工具</div>')
+        self.assertEqual(FundFetcher._target_etf_code(head + heading, profile), "159999")
+        self.assertIsNone(FundFetcher._target_etf_code(head + '<aside><a href="http://fund.eastmoney.com/159999.html">查看相关ETF&gt;</a></aside>', profile))
+        for page in [head.replace("001234", "999999") + heading,
+                     head + heading.replace("http://fund.eastmoney.com", "javascript:evil"),
+                     head + heading.replace("159999", "001234")]:
+            with self.subTest(page=page), self.assertRaises(FundDataError):
+                FundFetcher._target_etf_code(page, profile)
+
+    def test_target_metadata_must_match_link_and_be_etf(self):
+        from src.core.fund_analysis import FundProfile
+        profile = FundProfile(CODE, "测试ETF联接C")
+        own = ('<title>测试ETF联接C(001234)基金净值</title><div class="fundDetail-tit">'
+               '<a href="http://fund.eastmoney.com/159999.html">查看相关ETF&gt;</a></div>'
+               '<div class="fundDetail-tools">工具</div>')
+        target = HOMEPAGE.replace("001234", "159999").replace("测试基金C", "真实ETF").replace("混合型-偏股", "股票型-指数")
+        fetcher = FundFetcher(retries=0)
+        with patch.object(fetcher, "_get", side_effect=[self.industry(name=profile.name), own, target]) as get:
+            assets = fetcher._load_related_assets(profile, date(2026, 11, 9), [])
+        self.assertEqual(get.call_count, 3)
+        etf = [a for a in assets if a.category == "target_etf"][0]
+        self.assertEqual(etf.code, "159999")
+        self.assertEqual(etf.name, "真实ETF")
+        self.assertIsNone(etf.source_date)
+        self.assertIn("发布日期未知", etf.basis)
+        for wrong in [target.replace("159999", "159888"), target.replace("真实ETF", "普通股票基金")]:
+            warnings = []
+            with patch.object(fetcher, "_get", side_effect=[self.industry(name=profile.name), own, wrong]):
+                assets = fetcher._load_related_assets(profile, date(2026, 11, 9), warnings)
+            self.assertFalse(any(a.category == "target_etf" for a in assets))
+            self.assertTrue(any("目标ETF关系未核验" in w for w in warnings))
+
+    def test_optional_relation_failure_preserves_nav_without_guessing(self):
+        result = FundFetcher(opener=opener_for()).fetch(CODE)
+        self.assertEqual(len(result.navs), 2)
+        self.assertEqual(result.related_assets, [])
+        self.assertTrue(any("行业配置不可用" in w for w in result.warnings))
+
+    def test_historical_date_never_fetches_current_relations(self):
+        fetcher = FundFetcher(opener=opener_for())
+        with patch.object(fetcher, "_load_related_assets", side_effect=AssertionError("must not fetch")):
+            self.assertEqual(fetcher.fetch(CODE, as_of=date(2024, 1, 2)).related_assets, [])

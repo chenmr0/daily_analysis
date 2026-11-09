@@ -347,7 +347,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--fund-no-news',
         action='store_true',
-        help='场外基金模式仅生成确定性净值报告，不检索新闻'
+        help='场外基金模式跳过新闻检索；不影响模型解读开关'
+    )
+
+    parser.add_argument(
+        '--fund-no-ai',
+        action='store_true',
+        help='场外基金模式不调用模型，仅保留程序计算与数据证据'
     )
 
     parser.add_argument(
@@ -504,8 +510,8 @@ def parse_arguments() -> argparse.Namespace:
                 parse_fund_codes(args.funds)
         except ValueError as exc:
             parser.error(str(exc))
-    elif args.fund_no_news:
-        parser.error('--fund-no-news 需要 --funds')
+    elif args.fund_no_news or args.fund_no_ai:
+        parser.error('--fund-no-news / --fund-no-ai 需要 --funds')
     return args
 
 
@@ -1776,9 +1782,11 @@ def main() -> int:
                 fund_codes,
                 send_notification=not (args.no_notify or args.dry_run),
                 include_news=not (args.fund_no_news or args.dry_run),
+                include_interpretation=not (args.fund_no_ai or args.dry_run),
             )
-            logger.info("基金报告完成: 成功=%d 失败=%d 通知=%s",
-                        len(report.analyses), len(report.failed_codes), report.notification_status)
+            logger.info("基金报告完成: 成功=%d 失败=%d 通知=%s AI=%s",
+                        len(report.analyses), len(report.failed_codes), report.notification_status,
+                        getattr(report, "interpretation_status", "disabled"))
             notification_failed = report.notification_status in {
                 'unknown', 'all_failed', 'partial_failed', 'unavailable', 'no_channel',
             }

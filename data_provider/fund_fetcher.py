@@ -16,7 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from src.core.fund_analysis import (
-    FundData, FundProfile, Holding, HoldingsSnapshot, NavPoint,
+    FundData, FundProfile, FundRelatedAsset, Holding, HoldingsSnapshot, NavPoint,
 )
 
 
@@ -300,6 +300,93 @@ class FundFetcher:
             source_url=url, published_at=None,
         )
 
+    @staticmethod
+    def _industry_assets(payload: str, profile: FundProfile, url: str,
+                         today: date) -> list[FundRelatedAsset]:
+        """Use identity-bound JSON, not potentially stale static HTML summaries."""
+        result = json.loads(payload)
+        data = result.get("Data") or {}
+        if result.get("ErrCode") != 0 or data.get("FundCode") != profile.code or data.get("ShortName") != profile.name:
+            raise ProfileIdentityError("Industry response fund identity mismatch")
+        periods = data.get("QuarterInfos") or []
+        if not isinstance(periods, list):
+            raise FundDataError("Invalid industry periods")
+        dated = []
+        for period in periods[:8]:
+            day = date.fromisoformat(period["JZRQ"])
+            if day > today:
+                raise FundDataError("Future industry report period")
+            dated.append((day, period))
+        if not dated:
+            return []
+        day, period = max(dated, key=lambda item: item[0])
+        assets = []
+        for row in (period.get("HYPZInfo") or [])[:50]:
+            if row.get("BZDM") != profile.code or row.get("SHORTNAME") != profile.name or row.get("FSRQ") != day.isoformat():
+                raise ProfileIdentityError("Industry row identity or period mismatch")
+            name = row.get("HYMC")
+            if not isinstance(name, str) or not name.strip() or len(name) > 100:
+                raise FundDataError("Invalid industry name")
+            weight = _number(row.get("ZJZBL"))
+            if not 0 <= weight <= 100:
+                raise FundDataError("Invalid industry weight")
+            if weight > 0:
+                assets.append(FundRelatedAsset(
+                    "industry", name.strip(), url, source_date=day, weight_pct=weight, verified=True,
+                    basis="身份核验通过的行业配置接口；行业分类来自数据源，真实披露日期未知，不代表当前配置"))
+        return sorted(assets, key=lambda item: -item.weight_pct)[:10]
+
+    @staticmethod
+    def _target_etf_code(page: str, profile: FundProfile) -> Optional[str]:
+        _verify_profile_identity(page, profile.code, profile.name)
+        section = re.search(r'<div\b[^>]*class=["\']fundDetail-tit["\'][^>]*>(.*?)'
+                            r'<div\b[^>]*class=["\']fundDetail-tools["\']', page, re.S | re.I)
+        if not section:
+            return None
+        codes = []
+        for href, label in re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', section[1], re.S | re.I):
+            if _text(label) != "查看相关ETF>":
+                continue
+            match = re.fullmatch(r'https?://fund\.eastmoney\.com/([0-9]{6})\.html', href)
+            if not match or match[1] == profile.code:
+                raise ProfileIdentityError("Invalid target ETF link")
+            codes.append(match[1])
+        if len(set(codes)) > 1:
+            raise ProfileIdentityError("Conflicting target ETF links")
+        return codes[0] if codes else None
+
+    def _load_related_assets(self, profile: FundProfile, today: date,
+                            warnings: list[str]) -> list[FundRelatedAsset]:
+        assets = []
+        industry_url = f"https://api.fund.eastmoney.com/f10/HYPZ/?fundCode={profile.code}&year="
+        try:
+            assets.extend(self._industry_assets(self._get(industry_url), profile, industry_url, today))
+        except (FundDataError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            warnings.append(f"行业配置不可用或身份/日期未通过核验 [{_diagnostic(exc)}]；不从基金名称猜测行业比例。")
+        if "联接" not in profile.name or "ETF" not in profile.name.upper():
+            return assets
+        own_url = f"https://fund.eastmoney.com/{profile.code}.html"
+        try:
+            code = self._target_etf_code(self._get(own_url), profile)
+            if code is None:
+                raise ProfileSchemaError("Explicit target ETF link absent")
+            target_url = f"https://fund.eastmoney.com/{code}.html"
+            page = self._get(target_url)
+            title = re.search(r"<title\b[^>]*>(.*?)</title>", page, re.S | re.I)
+            name = re.match(r"(.+?)\(" + code + r"\)基金", _text(title[1]) if title else "")
+            if not name:
+                raise ProfileIdentityError("Target ETF identity mismatch")
+            target = self._homepage_profile(code, name[1], page, target_url)
+            if "ETF" not in (target.name + target.fund_type).upper() or "联接" in target.name:
+                raise ProfileIdentityError("Related asset is not a verified ETF")
+            assets.append(FundRelatedAsset(
+                "target_etf", target.name, own_url, code=code, identity_url=target_url,
+                basis="身份核验通过的基金标题区域明确链接相关ETF，并核验ETF页面名称/代码；同源资料，非独立复核；资料发布日期未知",
+                verified=True))
+        except (FundDataError, ValueError, TypeError) as exc:
+            warnings.append(f"目标ETF关系未核验 [{_diagnostic(exc)}]；未根据名称推断或补造映射。")
+        return assets
+
     def fetch(self, code: str, as_of: Optional[date] = None) -> FundData:
         if not isinstance(code, str) or not re.fullmatch(r"\d{6}", code, flags=re.ASCII):
             raise ValueError("Off-exchange fund code must be exactly six ASCII digits")
@@ -365,5 +452,10 @@ class FundFetcher:
             warnings.append("未取得可用股票持仓披露；不代表零持仓，也不代表基金或ETF穿透持仓。")
         else:
             warnings.append("持仓为定期报告期末股票明细，非实时仓位；实际公告日期未知，不能用于历史时点回测。")
+        related_assets = []
+        if as_of is None:
+            related_assets = self._load_related_assets(
+                profile, now.astimezone(timezone(timedelta(hours=8))).date(), warnings)
         return FundData(profile=profile, navs=navs, fetched_at=now,
-                        source_url=source, holdings=holdings, warnings=warnings)
+                        source_url=source, holdings=holdings, warnings=warnings,
+                        related_assets=related_assets)

@@ -68,6 +68,7 @@ def test_stock_reruns_keep_existing_notification_behavior():
 
 @pytest.mark.parametrize("env", [
     manual(ANALYSIS_NO_NOTIFY="$(false)"), manual(ANALYSIS_FORCE_RUN="yes"),
+    manual(ANALYSIS_FUND_NO_AI="yes"), manual("full", ANALYSIS_FUND_NO_AI="true"),
     manual(ANALYSIS_FUND_NO_NEWS="1"), manual(ANALYSIS_RUN_ATTEMPT="zero"),
     manual(ANALYSIS_RUN_ATTEMPT="0"), manual("full", ANALYSIS_FUND_NO_NEWS="true"),
     {"ANALYSIS_EVENT_NAME": "push"},
@@ -95,7 +96,7 @@ def test_workflow_wiring_preserves_stock_schedule_and_existing_services():
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["mode"]["default"] == "full"
     assert inputs["mode"]["options"] == ["full", "market-only", "stocks-only", "funds-only"]
-    for name in ("force_run", "no_notify", "fund_no_news"):
+    for name in ("force_run", "no_notify", "fund_no_news", "fund_no_ai"):
         assert inputs[name]["type"] == "boolean"
         assert inputs[name]["default"] is False
     assert inputs["fund_codes"]["type"] == "string"
@@ -112,7 +113,7 @@ def test_workflow_wiring_preserves_stock_schedule_and_existing_services():
     assert env["ANALYSIS_RUN_ATTEMPT"] == "${{ github.run_attempt }}"
     assert env["ANALYSIS_EVENT_NAME"] == "${{ github.event_name }}"
     assert env["ANALYSIS_SCHEDULE"] == "${{ github.event.schedule }}"
-    for name in ("force_run", "no_notify", "fund_no_news"):
+    for name in ("force_run", "no_notify", "fund_no_news", "fund_no_ai"):
         assert env[f"ANALYSIS_{name.upper()}"] == "${{ inputs." + name + " || 'false' }}"
     for key in ("EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVERS", "TAVILY_API_KEYS", "BOCHA_API_KEYS"):
         assert key in env
@@ -157,3 +158,10 @@ def test_option_shaped_fund_codes_are_bound_and_rejected_by_real_parser(codes):
     with patch.object(application.sys, "argv", command[1:]), pytest.raises(SystemExit) as exc:
         application.parse_arguments()
     assert exc.value.code == 2
+
+
+def test_fund_ai_switch_is_independent_of_news_and_notifications():
+    command, _ = runner.plan_command(manual(ANALYSIS_FUND_NO_AI="true"))
+    assert command == [runner.sys.executable, "main.py", "--funds", "--fund-no-ai"]
+    command, _ = runner.plan_command(manual(ANALYSIS_FUND_NO_NEWS="true"))
+    assert "--fund-no-ai" not in command

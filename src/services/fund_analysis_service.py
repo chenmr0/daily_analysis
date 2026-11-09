@@ -1,4 +1,4 @@
-"""Published-NAV fund reports, separate from stock OHLCV and LLM decisions."""
+"""Published-NAV facts with separately labelled evidence-cited cloud interpretation."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -9,11 +9,12 @@ import logging
 from pathlib import Path
 import re
 from typing import Dict, List, Optional
-import unicodedata
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from src.core.fund_analysis import FundAnalysis, analyze_fund, parse_fund_codes
+from src.services.fund_interpretation import FundInterpretation, interpret_funds
+from src.services.fund_news_service import FundNewsBundle, gather_fund_news
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,8 @@ class FundReport:
     report_path: Optional[str] = None
     snapshot_path: Optional[str] = None
     notification_status: str = "disabled"
+    interpretation_status: str = "disabled"
+    interpretation: Optional[FundInterpretation] = None
 
 
 def _text(value: object) -> str:
@@ -51,64 +54,92 @@ def _link(label: str, url: str) -> str:
     return f"[{_text(label)}]({quote(url, safe=':/?=&%+,-._~')})"
 
 
-def _headline_matches_fund(title: str, fund_name: str) -> bool:
-    """Require the full identity in the headline, not an SEO/search snippet."""
-    def normalize(value: str) -> str:
-        return "".join(unicodedata.normalize("NFKC", html.unescape(value)).split())
+NEWS_LABELS = {
+    "announcement": "基金公告", "direct_fund": "基金新闻", "target_etf": "目标ETF",
+    "holding": "已披露重仓股", "industry": "已披露行业", "theme": "产品名称主题",
+}
+DATE_LABELS = {"fresh": "日期在本次新闻窗口内", "stale": "已过时效窗口", "unknown": "日期未核验", "future": "未来日期，未作为近期证据"}
+INSIGHT_LABELS = {"conclusion": "核心结论", "risks": "风险提示", "evidence": "证据", "observations": "后续观察"}
 
-    name = normalize(fund_name)
-    headline = normalize(title)
-    if not name:
-        return False
-    # Keep share classes and Latin tokens intact: A must not match AC/A1.
-    pattern = re.escape(name)
-    if name[0].isascii() and name[0].isalnum():
-        pattern = r"(?<![A-Za-z0-9])" + pattern
-    if name[-1].isascii() and name[-1].isalnum():
-        pattern += r"(?![A-Za-z0-9])"
-    return re.search(pattern, headline) is not None
+
+def _news_lines(bundle: FundNewsBundle) -> List[str]:
+    lines = []
+    for item in bundle.items:
+        lines.append(
+            f"【{NEWS_LABELS.get(item.category, '相关线索')}】{_link(item.title, item.url)}；"
+            f"来源：{_text(item.source)}；发布日期：{item.published_date or '未提供'}；"
+            f"{DATE_LABELS.get(item.date_status, '日期未核验')}；关联依据：{_text(item.relation_basis)}"
+            + (f"；{_link('关联资料来源', item.source_url)}。" if item.source_url else "。")
+        )
+    if not lines:
+        lines.append("未找到通过本基金身份匹配或已核验关联筛选的近期新闻；不代表没有相关事件。")
+    for category, coverage in bundle.coverage.items():
+        if coverage.queries or coverage.status in {"not_configured", "no_identity", "timeout", "unavailable", "skipped_budget"}:
+            lines.append(f"{NEWS_LABELS.get(category, category)}检索覆盖：{_text(coverage.detail or coverage.status)}")
+    lines.extend(_text(warning) for warning in bundle.warnings)
+    return list(dict.fromkeys(lines))
 
 
 def _fund_news(data, search_service) -> List[str]:
-    if search_service is None or not search_service.is_available:
-        return ["未配置可用新闻检索；不影响净值及指标计算。"]
-    profile = data.profile
-    try:
-        response = search_service.search_topic_news_bounded(
-            profile.name,
-            max_results=5,
-            focus_keywords=[f'"{profile.name}"', f'"{profile.code}"', "基金 公告"],
-            timeout_seconds=12.0,
-        )
-        if not response.success:
-            return ["新闻检索不可用；不能据此判断没有相关事件。"]
-        lines = []
-        for item in response.results:
-            # Numeric codes and snippet-only mentions are insufficient evidence.
-            if not _headline_matches_fund(item.title, profile.name):
-                continue
-            lines.append(
-                f"{_link(item.title, item.url)}；来源：{_text(item.source)}；"
-                f"发布日期：{_text(item.published_date or '未提供')}；"
-                "关联依据：标题含本基金全名（含份额类别），仅作身份匹配，未作涨跌归因。"
-            )
-        return lines or ["未找到通过本基金身份匹配的近期新闻；不代表没有相关事件。"]
-    except Exception as exc:
-        logger.warning("[基金] %s 新闻检索失败: %s", profile.code, exc)
-        return ["新闻检索失败；不影响净值及指标计算。"]
+    """Compatibility text projection; structured evidence is kept in snapshots."""
+    return _news_lines(gather_fund_news(data, search_service))
 
 
-def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], news, generated_at: datetime) -> str:
+def _statement_line(statement, interpretation: FundInterpretation) -> str:
+    citations = []
+    for evidence_id in statement.evidence_ids:
+        fact = interpretation.facts.get(evidence_id)
+        if fact is None:
+            continue
+        label = evidence_id + (f" / {fact.data_date}" if fact.data_date else " / 资料日期未提供")
+        citations.append(_link(label, fact.source_url) if fact.source_url else _text(label))
+    return f"- {_text(statement.text)}" + ("（证据：" + "；".join(citations) + "）" if citations else "")
+
+
+def _overview(analyses, interpretation: Optional[FundInterpretation]) -> List[str]:
+    lines = ["## 横向数据对照（程序计算，不作排名）", "",
+             "各列以各基金已披露日期和实际计算区间为准；日期、币种、区间未对齐时只作并列展示，不能解释为优劣排名。", "",
+             "| 基金 | 净值日期 | 近一个月净值变化 | 近十二个月最大回撤 |", "| --- | --- | --- | --- |"]
+    for analysis in analyses:
+        def display(key):
+            metric = analysis.metrics.get(key)
+            if metric is None or metric.value is None:
+                return "N/A"
+            return f"{metric.value * 100:.2f}%（{metric.start_date} 至 {metric.end_date}）"
+        profile = analysis.data.profile
+        lines.append(f"| {_text(profile.name)}（{profile.code}） | {analysis.data.navs[-1].nav_date} | {display('return_1m')} | {display('max_drawdown_12m')} |")
+    lines.append("")
+    if interpretation is None:
+        return lines
+    reasons = list(dict.fromkeys(reason for item in interpretation.comparison_context.get("metrics", {}).values()
+                                 for reason in item.get("reasons", [])))
+    if reasons:
+        lines.extend(["比较限制：" + "；".join(_text(reason) for reason in reasons) + "。", ""])
+    lines.extend(["## AI解读状态与横向观察", "",
+                  f"状态：{_text(interpretation.status)}；{_text(interpretation.reason)}", ""])
+    if interpretation.model or interpretation.provider:
+        lines.extend([f"实际模型：{_text(interpretation.model or '未返回')}；供应方：{_text(interpretation.provider or '未返回')}；后端：{_text(interpretation.backend or '未返回')}。", ""])
+    if interpretation.status == "ok":
+        lines.extend(_statement_line(statement, interpretation) for statement in interpretation.comparison)
+        lines.append("")
+    else:
+        lines.extend(["本报告未生成可采用的模型结论。以下只有程序计算、来源证据与明确的数据边界，不冒充GPT解读。", ""])
+    return lines
+
+
+def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], news, generated_at: datetime,
+                       interpretation: Optional[FundInterpretation] = None) -> str:
     lines = [
         "# 场外基金已披露净值日报",
         "",
         f"生成时间：{generated_at.isoformat()}；各基金以各自最新已披露净值日期为准。",
         "",
-        "仅作数据研究，不是交易指令、评分或收益承诺。没有持仓权重，不计算个人组合收益。",
+        "仅作数据研究，不是交易指令、评分或收益承诺。未提供个人持有金额或组合权重，不计算个人组合收益。",
         "收益由程序计算，仅在区间未发现分红/拆分且累计净值与单位净值差额稳定时使用净值比值。",
         "遇到分红、拆分、缺数或历史不足显示 N/A，不将累计净值比值冒充总回报。",
         "",
     ]
+    lines.extend(_overview(analyses, interpretation))
     for analysis in analyses:
         data = analysis.data
         profile = data.profile
@@ -124,6 +155,14 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
             f"- 基金资料：{_link('资料来源', profile.source_url)}；基金经理：{_text(profile.manager or '未提供')}；"
             f"成立日期：{profile.inception_date or '未提供'}。",
         ])
+        if interpretation is not None and interpretation.status == "ok":
+            insight = interpretation.funds.get(profile.code)
+            if insight is not None:
+                lines.extend(["", "### AI基金解读（推理观点，非事实认证）", ""])
+                for key, label in INSIGHT_LABELS.items():
+                    lines.append(f"**{label}**")
+                    lines.extend(_statement_line(statement, interpretation) for statement in getattr(insight, key))
+                lines.append("")
         if latest.accumulated_nav is not None:
             lines.append(f"- 累计净值：{latest.accumulated_nav:.6f}（不用于直接计算总回报）。")
         for key, label in METRIC_LABELS.items():
@@ -147,7 +186,16 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
             for holding in portfolio.holdings[:10]:
                 lines.append(f"- {_text(holding.name)}（{_text(holding.code)}）：占基金净值 {holding.weight_pct:.2f}%。")
         if "联接" in profile.name:
-            lines.append("这是ETF联接基金：股票持仓表不等于目标ETF或底层完整持仓，未进行穿透和收益归因。")
+            lines.append("这是ETF联接基金：股票持仓表不等于目标ETF或底层完整持仓；目标ETF身份以另列来源为准，未进行穿透和收益归因。")
+        related = [asset for asset in getattr(data, "related_assets", []) if asset.verified]
+        if related:
+            lines.extend(["", "### 已核验关联资料", ""])
+            for asset in related:
+                suffix = f"；占基金净值 {asset.weight_pct:.2f}%" if asset.weight_pct is not None else ""
+                lines.append(f"- {NEWS_LABELS.get(asset.category, asset.category)}：{_text(asset.name)}"
+                             f"（{_text(asset.code or '未提供代码')}）；报告期/关系日期：{asset.source_date or '未知'}"
+                             f"；真实披露日期：{asset.published_at or '未知'}{suffix}；{_link('关联来源', asset.source_url)}"
+                             + (f"；{_link('关联标的身份', asset.identity_url)}" if asset.identity_url else "") + "。")
         lines.extend(["", "### 数据质量与边界", ""])
         for warning in dict.fromkeys([*data.warnings, *analysis.warnings]):
             lines.append(f"- {_text(warning)}")
@@ -168,6 +216,8 @@ def run_fund_analysis(
     *,
     send_notification: bool = False,
     include_news: bool = True,
+    include_interpretation: bool = False,
+    interpreter=None,
     fetcher=None,
     notifier=None,
     search_service=None,
@@ -191,7 +241,8 @@ def run_fund_analysis(
             logger.warning("[基金] 新闻服务不可用: %s", exc)
     generated_at = datetime.now(timezone.utc)
     end_day = as_of or generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
-    analyses, failed, news = [], {}, {}
+    analyses, failed, news, news_evidence = [], {}, {}, {}
+    historical = as_of is not None and as_of < generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
     for code in fund_codes:
         try:
             data = fetcher.fetch(code, as_of=as_of) if as_of is not None else fetcher.fetch(code)
@@ -199,24 +250,47 @@ def run_fund_analysis(
                 raise ValueError(f"返回基金代码 {data.profile.code} 与请求 {code} 不一致")
             analysis = analyze_fund(data, as_of=end_day)
             analyses.append(analysis)
-            if as_of is not None and as_of < generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date():
+            if historical:
                 news[code] = ["历史截止日分析不加入当前新闻，避免前视信息。"]
+            elif include_news:
+                try:
+                    bundle = gather_fund_news(analysis.data, search_service, as_of=end_day)
+                    news_evidence[code] = asdict(bundle)
+                    news[code] = _news_lines(bundle)
+                except Exception as exc:
+                    logger.warning("[基金] 新闻组件异常，保留净值: %s", type(exc).__name__)
+                    news[code] = ["新闻组件不可用；未核验近期事件，不影响净值数据。"]
+                    news_evidence[code] = {"items": [], "coverage": {}, "warnings": news[code]}
             else:
-                news[code] = _fund_news(analysis.data, search_service) if include_news else ["本次未启用新闻检索。"]
+                news[code] = ["本次未启用新闻检索。"]
         except Exception as exc:
             failed[code] = str(exc) or type(exc).__name__
             logger.warning("[基金] %s 获取或校验失败: %s", code, failed[code])
-    report = FundReport(render_fund_report(analyses, failed, news, generated_at), analyses, failed)
+    try:
+        interpretation = (interpreter or interpret_funds)(
+            analyses, news_evidence, enabled=include_interpretation and not historical,
+        )
+        if not isinstance(interpretation, FundInterpretation):
+            raise TypeError("Invalid interpretation contract")
+        if historical and include_interpretation:
+            interpretation.reason = "历史截止日不混入当前资料和新闻形成AI判断；仅展示程序数据。"
+    except Exception as exc:
+        logger.warning("[基金] 解读组件异常，保留数据报告: %s", type(exc).__name__)
+        interpretation = FundInterpretation("model_failed", "解读组件不可用，保留程序数据与来源；未采用模型结论。")
+    report = FundReport(render_fund_report(analyses, failed, news, generated_at, interpretation),
+                        analyses, failed, interpretation_status=interpretation.status, interpretation=interpretation)
     directory = Path(output_dir) if output_dir is not None else Path(__file__).resolve().parents[2] / "reports"
     directory.mkdir(parents=True, exist_ok=True)
     basename = f"fund_report_{generated_at:%Y%m%d_%H%M%S_%f}"
     report_path, snapshot_path = directory / f"{basename}.md", directory / f"{basename}.json"
     snapshot = {
-        "schema_version": 1, "asset_type": "mutual_fund", "generated_at": generated_at,
+        "schema_version": 2, "asset_type": "mutual_fund", "generated_at": generated_at,
         "as_of": end_day,
         "analyses": [dict(canonical_id=item.data.profile.canonical_id, **asdict(item)) for item in analyses],
         "failed_codes": failed,
         "news": news,
+        "news_evidence": news_evidence,
+        "interpretation": asdict(interpretation),
     }
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str, allow_nan=False), encoding="utf-8")
     report_path.write_text(report.markdown, encoding="utf-8")

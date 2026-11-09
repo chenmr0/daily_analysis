@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      fund_no_ai:
+        description: '基金模式跳过AI解读，仅保留程序数据'
+        required: false
+        default: false
+        type: boolean
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -86,6 +91,7 @@ jobs:
           ANALYSIS_FORCE_RUN: ${{ inputs.force_run || 'false' }}
           ANALYSIS_NO_NOTIFY: ${{ inputs.no_notify || 'false' }}
           ANALYSIS_FUND_NO_NEWS: ${{ inputs.fund_no_news || 'false' }}
+          ANALYSIS_FUND_NO_AI: ${{ inputs.fund_no_ai || 'false' }}
           ANALYSIS_RUN_ATTEMPT: ${{ github.run_attempt }}
           FUND_LIST: ${{ vars.FUND_LIST || secrets.FUND_LIST }}
           # ==========================================

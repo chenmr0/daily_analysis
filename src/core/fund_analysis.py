@@ -63,6 +63,25 @@ class HoldingsSnapshot:
 
 
 @dataclass
+class FundRelatedAsset:
+    """Source-bound relationship, not an assertion about current exposure.
+
+    source_date is the disclosed period end, never retrieval time. verified
+    means identity-bound provider evidence, not independent source confirmation.
+    """
+    category: str
+    name: str
+    source_url: str
+    source_date: Optional[date] = None
+    code: Optional[str] = None
+    weight_pct: Optional[float] = None
+    published_at: Optional[date] = None
+    identity_url: str = ""
+    basis: str = ""
+    verified: bool = False
+
+
+@dataclass
 class FundData:
     profile: FundProfile
     navs: list[NavPoint]
@@ -70,6 +89,7 @@ class FundData:
     source_url: str
     holdings: Optional[HoldingsSnapshot] = None
     warnings: list[str] = field(default_factory=list)
+    related_assets: list[FundRelatedAsset] = field(default_factory=list)
 
 
 @dataclass
