@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 每日 Actions 仅手动 `funds-only` 安装时排除不被基金独立路径使用的 `fxmacrodata-public-client`，其余模式保留完整依赖；保留原清单、哈希及相对 include 语义，安装失败仍中止并清理临时文件。
 - [修复] 基金解读输出校验增加固定阶段/原因及安全位置计数，统一写入报告、JSON和日志，不记录模型原文或供应商异常；保持整批拒绝与单次调用边界，历史统一错误不能反推具体子原因。
 - [修复] 基金新闻排除静态行情资料页及仅提及公司的其他产品持仓报道，区分事件线索、具体行业背景和不进入模型的宽泛背景，记录有限枚举筛选统计。
 
