@@ -5026,3 +5026,83 @@ def test_generate_text_metadata_rejects_invalid_deadline_before_call(deadline):
     with pytest.raises(ValueError):
         analyzer.generate_text_with_metadata("prompt", timeout_seconds=deadline)
     analyzer._call_litellm.assert_not_called()
+
+
+class TestFundRequestPolicy:
+    _make_analyzer = TestAnalyzerGenerateText._make_analyzer
+
+    @pytest.mark.parametrize("model", ["gemini/test", "anthropic/test", "openai/test", "deepseek/test"])
+    @pytest.mark.parametrize("router_enabled", [False, True])
+    def test_fund_policy_preserves_provider_route_and_sets_request_options(self, model, router_enabled):
+        from src.config import Config
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override = Config(litellm_model=model, litellm_fallback_models=["openai/backup"])
+        analyzer._router = MagicMock() if router_enabled else None
+        response = {"model": model, "choices": [{"message": {"content": "ok"}}]}
+        with patch("src.analyzer.litellm.completion", return_value=response) as direct, \
+             patch("src.analyzer.call_litellm_with_param_recovery", side_effect=AssertionError("no repair")):
+            if router_enabled:
+                analyzer._router.completion.return_value = response
+            result = analyzer.generate_text_with_metadata("prompt", timeout_seconds=67.5, allow_retries=False)
+        call = analyzer._router.completion if router_enabled else direct
+        call.assert_called_once()
+        options = call.call_args.kwargs
+        assert options["model"] == model and options["timeout"] == 67.5
+        assert options["num_retries"] == options["max_retries"] == 0
+        assert options["fallbacks"] == [] and options["context_window_fallback_dict"] == {}
+        assert "allow_retries" not in options
+        if router_enabled:
+            assert options["disable_fallbacks"] is True
+            assert options["context_window_fallbacks"] == options["content_policy_fallbacks"] == []
+        assert result.text == "ok"
+        assert analyzer._config_override.litellm_fallback_models == ["openai/backup"]
+
+    @pytest.mark.parametrize("allow_retries,expected", [(False, 1), (True, 2)])
+    @pytest.mark.parametrize("failure", ["timeout", "parameter"])
+    def test_fund_skips_model_fallback_and_parameter_repair_but_defaults_keep_them(self, allow_retries, expected, failure):
+        from src.config import Config
+        from src.llm.generation_params import clear_litellm_generation_param_recovery_cache
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override = Config(litellm_model="openai/policy-test", litellm_fallback_models=["openai/backup"])
+        message = "temperature=0.7 is unsupported. Only the default (1.0) value is supported."
+        error = RuntimeError(message) if failure == "parameter" else TimeoutError("offline timeout")
+        response = {"choices": [{"message": {"content": "ok"}}]}
+        # Keep compatibility recovery cache independent of other test cases.
+        clear_litellm_generation_param_recovery_cache()
+        try:
+            with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=[error, response]) as dispatch:
+                kwargs = {} if allow_retries else {"allow_retries": False}
+                result = analyzer.generate_text_with_metadata("prompt", timeout_seconds=90, **kwargs)
+            assert dispatch.call_count == expected
+            assert result.text == ("ok" if allow_retries else "")
+            if allow_retries:
+                assert "num_retries" not in dispatch.call_args.args[1]
+                if failure == "parameter":
+                    assert dispatch.call_args.args[0] == "openai/policy-test"
+                else:
+                    assert dispatch.call_args.args[0] == "openai/backup"
+        finally:
+            clear_litellm_generation_param_recovery_cache()
+
+    @pytest.mark.parametrize("allow_retries,expected", [(False, 1), (True, 2)])
+    def test_backend_fallback_respects_request_policy(self, allow_retries, expected):
+        from src.llm.generation_backend import GenerationError, GenerationErrorCode, GenerationResult
+
+        analyzer = self._make_analyzer()
+        error = GenerationError(error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                                stage="generation", retryable=True, fallbackable=True,
+                                backend="litellm", provider="openai")
+        primary, backup = MagicMock(), MagicMock()
+        primary.generate.side_effect = error
+        backup.generate.return_value = GenerationResult("ok", "test", "openai", "litellm", {})
+        with patch.object(analyzer, "get_generation_backend_config_error", return_value=None), \
+             patch.object(analyzer, "_resolve_generation_backend_config", return_value=("litellm", "litellm")), \
+             patch.object(analyzer, "_get_generation_backend", side_effect=[primary, backup]) as factory:
+            if allow_retries:
+                assert analyzer.generate_text_with_metadata("prompt").text == "ok"
+            else:
+                with pytest.raises(GenerationError):
+                    analyzer.generate_text_with_metadata("prompt", allow_retries=False)
+        assert factory.call_count == expected

@@ -241,10 +241,10 @@ def test_reference_failure_is_isolated_and_does_not_change_notification_count(tm
     assert saved["interpretation"]["status"] == "disabled"
     assert saved["action_references"] == json.loads(json.dumps(
         {key: asdict(item) for key, item in report.action_references.items()}, default=str))
-    assert report.markdown.index("## 操作参考") < report.markdown.index("## 横向数据对照")
-    overview = report.markdown.split("全部基金速览", 1)[1].split("\n### ", 1)[0]
-    assert all("fund:" + code in overview for code in ("001672", "024480", "020356"))
-    assert "**观望**" in overview and overview.count("**无法判断**") == 2
+    assert "操作参考" not in report.markdown and "观望" not in report.markdown
+    assert all(code in report.markdown for code in ("001672", "024480", "020356"))
+    assert "数据获取或校验失败" in report.markdown
+
 
 
 @pytest.mark.parametrize("bad", [None, object(), "buy", replace(unavailable_reference("024480", MONDAY), fund_code="024480")])
@@ -304,11 +304,11 @@ def test_reference_markup_and_no_personal_input_contract(tmp_path):
     report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, as_of=MONDAY, output_dir=tmp_path)
     card = report.markdown.split("## 横向数据对照")[0]
     assert "<img" not in card and "&lt;img" in card
-    for text in ("若未持有", "若已持有", "证据日期", "改变判断前", "历史最差峰谷跌幅", "非当前回撤或个人亏损"):
-        assert text in card
-    assert "币种：未核验" in card
+    assert "若未持有" not in card and "若已持有" not in card
+    assert "非当前回撤" in card
     assert "买入候选" not in card and "卖出评估" not in card
     assert "最佳" not in card and "波动率" not in card
+
 
 
 def test_direct_renderer_and_service_share_cards_and_cutoff_for_failed_and_valid_codes(tmp_path):
@@ -317,10 +317,10 @@ def test_direct_renderer_and_service_share_cards_and_cutoff_for_failed_and_valid
     report = run_fund_analysis(["001672", "024480"], fetcher=fetcher, include_news=False,
                                as_of=MONDAY, output_dir=tmp_path)
     direct = render_fund_report(report.analyses, report.failed_codes, {}, datetime.now(timezone.utc), as_of=MONDAY)
-    section = lambda text: text.split("## 操作参考", 1)[1].split("## 横向数据对照", 1)[0]
-    assert section(direct) == section(report.markdown)
-    assert "fund:024480" in section(direct) and "无法判断" in section(direct)
-    assert "报告截止日期 2026-11-09" in section(direct)
+    assert direct == report.markdown
+    assert "fund:024480" in direct and "invalid NAV" in direct
+    assert "2026-11-09" in direct
+
 
 
 def test_extreme_history_does_not_assert_current_or_personal_loss():
@@ -335,5 +335,5 @@ def test_extreme_history_does_not_assert_current_or_personal_loss():
     assert reference.evidence[-1].value == .75
     report = render_fund_report([value], {}, {}, data.fetched_at, as_of=MONDAY)
     card = report.split("## 横向数据对照", 1)[0]
-    assert "75.00%" in card and "历史最差峰谷跌幅，非当前回撤或个人亏损" in card
+    assert "75.00%" in card and "历史峰谷，非当前回撤" in card
     assert "你的亏损" not in card and "当前回撤75" not in card

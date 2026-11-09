@@ -83,7 +83,8 @@ def test_valid_narrative_uses_program_fact_slots_and_actual_provider_metadata():
     assert "不能保证所有定性推理正确" in result.reason
     assert "量化或持仓时效错误" in result.reason
     prompt, options, safe_config = calls[0]
-    assert options["max_tokens"] == module.MAX_OUTPUT_TOKENS and options["timeout_seconds"] == 45
+    assert options["max_tokens"] == module.MAX_OUTPUT_TOKENS and 89 < options["timeout_seconds"] <= 90
+    assert options["allow_retries"] is False
     assert "场外基金" in options["system_prompt"] and "不可信数据" in options["system_prompt"]
     assert "默认只写一项" in prompt and "四十至一百" in prompt and "程序检查不等于语义证明" in prompt
     assert safe_config.generation_fallback_backend == ""
@@ -284,10 +285,12 @@ def test_nonfresh_news_titles_never_enter_model_prompt(status):
     assert "新闻日期未核验" in calls[0][0] and not any(f.kind == "news_lead" for f in result.facts.values())
 
 
-def test_real_analyzer_public_boundary_with_fake_cloud_provider_and_actual_fallback_identity(monkeypatch):
+@pytest.mark.parametrize("primary,expected_status", [("openai/unavailable-test", "model_failed"),
+                                                    ("anthropic/primary-test", "ok")])
+def test_real_analyzer_boundary_skips_fallback_and_keeps_actual_identity(monkeypatch, primary, expected_status):
     import src.analyzer as analyzer_module
     from src.config import Config
-    config = Config(litellm_model="openai/unavailable-test", litellm_fallback_models=["anthropic/fallback-test"],
+    config = Config(litellm_model=primary, litellm_fallback_models=["anthropic/fallback-test"],
                     generation_backend="litellm", generation_fallback_backend="")
     calls = []
 
@@ -301,9 +304,17 @@ def test_real_analyzer_public_boundary_with_fake_cloud_provider_and_actual_fallb
     monkeypatch.setattr(analyzer_module.GeminiAnalyzer, "_dispatch_litellm_completion", fake_provider)
     monkeypatch.setattr(analyzer_module, "persist_llm_usage", lambda *a, **kw: None)
     result = interpret_funds([analysis()], config=config, timeout_seconds=5)
-    assert result.status == "ok" and result.provider == "anthropic" and result.model == "anthropic/actual-test-model"
-    assert [call[0] for call in calls] == ["openai/unavailable-test", "anthropic/fallback-test"]
-    assert all(call[1]["timeout"] == 5 and "场外基金" in call[1]["messages"][0]["content"] for call in calls)
+    assert result.status == expected_status
+    if expected_status == "ok":
+        assert result.provider == "anthropic" and result.model == "anthropic/actual-test-model"
+    else:
+        assert result.facts and not result.funds
+        assert result.diagnostics == {"stage": "generation", "code": "provider_failed"}
+        assert not result.model and not result.provider and not result.backend
+    assert [call[0] for call in calls] == [primary]
+    assert 0 < calls[0][1]["timeout"] <= 3.75
+    assert "场外基金" in calls[0][1]["messages"][0]["content"]
+    assert calls[0][1]["num_retries"] == calls[0][1]["max_retries"] == 0
 
 
 def test_bad_text_rejected_through_real_analyzer_public_boundary(monkeypatch):
@@ -624,3 +635,54 @@ def test_representative_six_fund_response_keeps_history_missing_currency_and_new
     failed = interpret_funds(analyses, news, config=configuration(), analyzer_factory=fake_factory(output))
     assert failed.diagnostics["code"] == "metric_unaligned" and failed.diagnostics["section"] == "comparison"
     assert failed.status == "partial" and len(failed.funds) == 6 and not failed.comparison
+
+
+@pytest.mark.parametrize("total,initialization,expected", [
+    (120.0, 0.0, 90.0), (120.0, 30.0, 60.0),
+    (.04, .01, .02), (120.0, 91.0, None), (120.0, 121.0, None),
+])
+def test_request_timeout_uses_remaining_budget_after_initialization(monkeypatch, total, initialization, expected):
+    clock, calls = [0.0], []
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(module.threading, "Thread", lambda *, target, **_: SimpleNamespace(start=target))
+
+    def factory(*, config):
+        clock[0] += initialization
+        return fake_factory(calls=calls)(config=config)
+
+    result = interpret_funds([analysis()], config=configuration(), analyzer_factory=factory, timeout_seconds=total)
+    if expected is None:
+        assert not calls and result.diagnostics == {"stage": "generation", "code": "request_timeout"}
+        assert result.facts and not result.funds
+    else:
+        assert result.status == "ok" and len(calls) == 1
+        assert calls[0][1]["timeout_seconds"] == pytest.approx(expected)
+        assert calls[0][1]["allow_retries"] is False
+
+
+def test_response_after_deadline_is_discarded_even_when_thread_finishes(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(module.threading, "Thread", lambda *, target, **_: SimpleNamespace(start=target))
+
+    def factory(*, config):
+        analyzer = fake_factory()(config=config)
+        original = analyzer.generate_text_with_metadata
+
+        def generate(*args, **kwargs):
+            clock[0] = 121.0
+            return original(*args, **kwargs)
+
+        analyzer.generate_text_with_metadata = generate
+        return analyzer
+
+    result = interpret_funds([analysis()], config=configuration(), analyzer_factory=factory)
+    assert result.status == "model_failed" and result.diagnostics["code"] == "request_timeout"
+    assert result.facts and not result.funds
+
+
+def test_empty_model_response_without_provider_failure_keeps_response_diagnostic():
+    response = GenerationResult("", "actual-model", "openai", "litellm", {})
+    result = interpret_funds([analysis()], config=configuration(), analyzer_factory=fake_factory(response=response))
+    assert result.diagnostics["code"] == "response_empty"
+    assert result.model == "actual-model" and result.provider == "openai"

@@ -23,7 +23,7 @@ def test_report_is_fund_specific_and_snapshot_is_isolated(tmp_path):
     fetcher.fetch.return_value = sample()
     report = run_fund_analysis("fund:001672", fetcher=fetcher, include_news=False,
                                output_dir=tmp_path, as_of=date(2026, 11, 8))
-    assert "fund:001672" in report.markdown
+    assert "## 001672" in report.markdown
     assert "1.100000" in report.markdown
     assert "2026-11-06" in report.markdown
     assert "10.00%" in report.markdown
@@ -160,7 +160,7 @@ def test_same_numeric_stock_code_is_not_fund_news(tmp_path):
     ])
     report = run_fund_analysis("000001", fetcher=fetcher, search_service=search, output_dir=tmp_path)
     assert "平安银行" not in report.markdown
-    assert "未找到通过本基金身份匹配" in report.markdown
+    assert "平安银行" not in report.markdown
 
 
 def test_notification_transport_feedback_is_persisted_without_recipients(tmp_path):
@@ -264,7 +264,7 @@ def test_interpretation_component_failure_preserves_facts(tmp_path, failure):
     report = run_fund_analysis("001672", fetcher=fetcher, include_news=False, include_interpretation=True,
                                interpreter=interpreter, output_dir=tmp_path)
     assert not report.failed_codes and report.interpretation_status == "model_failed"
-    assert "1.100000" in report.markdown and "未生成可采用的模型结论" in report.markdown
+    assert "1.100000" in report.markdown and "未采用模型结论" in report.markdown
     assert "private provider detail" not in report.markdown
 
 
@@ -317,7 +317,7 @@ def test_component_diagnostic_is_consistent_and_never_leaks_exception(tmp_path, 
     for scope in (saved['interpretation']['fund_statuses']['001672'], saved['interpretation']['comparison_status']):
         assert scope['status'] == 'model_failed'
         assert scope['diagnostics'] == saved['interpretation']['diagnostics']
-    assert r'component\_failed' in report.markdown and 'component_failed' in caplog.text
+    assert r'component\_failed' not in report.markdown and 'component_failed' in caplog.text
     assert secret not in report.markdown + caplog.text + json.dumps(saved)
     assert report.notification_status == 'disabled'
     assert '1.100000' in report.markdown
@@ -368,10 +368,11 @@ def test_news_report_separates_weak_background_and_sanitizes_filter_counts(tmp_p
         report = run_fund_analysis('001672', fetcher=fetcher, search_service=Mock(), output_dir=tmp_path)
     saved_text = open(report.snapshot_path, encoding='utf-8').read()
     saved = json.loads(saved_text)
-    assert '以下仅为宽泛背景' in report.markdown
-    assert '不作为模型事件证据' in report.markdown
-    assert '静态行情或资料页 1条' in report.markdown
-    assert '未找到通过本基金身份匹配或已核验关联筛选的近期事件新闻' in report.markdown
+    assert item.title not in report.markdown
+    assert '以下仅为宽泛背景' in '\n'.join(saved['news']['001672'])
+    assert '不作为模型事件证据' in '\n'.join(saved['news']['001672'])
+    assert '静态行情或资料页 1条' in '\n'.join(saved['news']['001672'])
+    assert item.title not in report.markdown
     assert saved['news_evidence']['001672']['items'][0]['model_eligible'] is False
     assert saved['news_evidence']['001672']['coverage']['industry']['reason_counts'] == {'static_page': 1, 'weak_background': 1}
     for secret in ('SECRET_PRIVATE_TITLE', 'PRIVATE_BODY'):
@@ -404,7 +405,7 @@ def test_provider_response_validation_diagnostic_reaches_final_report_without_ra
     assert diag['fund_code'] == '001672' and diag['section'] == 'conclusion'
     assert diag['item_index'] == 0
     assert saved['interpretation']['funds'] == {} and saved['interpretation']['comparison'] == []
-    assert r'citation\_unknown' in report.markdown and 'citation_unknown' in caplog.text
+    assert r'citation\_unknown' not in report.markdown and 'citation_unknown' in caplog.text
     assert 'PRIVATE_UNKNOWN_CITATION' not in saved_text + report.markdown + caplog.text
     assert '1.100000' in report.markdown
     assert report.notification_status == 'disabled'
@@ -455,7 +456,7 @@ def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(t
     assert report.markdown.count('### AI基金解读（推理观点，非事实认证）') == (1 if reject_fund else 2)
     assert '部分AI解读通过校验' in report.markdown
     assert '未生成可采用的模型结论' not in report.markdown
-    assert '横向观察状态：model\\_failed' in report.markdown
+    assert '横向解读失败' in report.markdown
     for marker in ('应拒绝的原始模型文字', '应拒绝的横向模型文字', 'PRIVATE_UNKNOWN_ID', 'PRIVATE_COMPARISON_ID'):
         assert marker not in report.markdown + saved_text
     analyzer.generate_text_with_metadata.assert_called_once()
@@ -491,6 +492,6 @@ def test_partial_scope_diagnostics_are_sanitized_at_reporting_boundary(tmp_path,
     assert '模型解读范围安全诊断 024480:' in caplog.text
     assert '模型解读范围安全诊断 comparison:' in caplog.text
     assert '已接受的观点' in report.markdown and '引用校验失败' in report.markdown
-    assert r'citation\_unknown' in report.markdown
+    assert r'citation\_unknown' not in report.markdown
     for marker in ('PRIVATE_RESPONSE', 'SECRET_KEY', 'secret-section', 'private-account', 'private-body', 'SECRET_VALUE'):
         assert marker not in saved_text + report.markdown + caplog.text

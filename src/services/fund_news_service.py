@@ -300,6 +300,217 @@ def _date_status(day, as_of, fresh_days):
     return "fresh" if (as_of - day).days <= fresh_days else "stale"
 
 
+def _news_value(record, key, default=None):
+    """Read either live evidence or its backwards-compatible JSON snapshot."""
+    return record.get(key, default) if isinstance(record, dict) else getattr(record, key, default)
+
+
+def _digest_entity(item, assets):
+    category = _news_value(item, "category", "")
+    if category in {"announcement", "direct_fund"}:
+        return "fund:" + _news_value(item, "source_url", ""), "", "", {
+            "category": "fund", "name": "", "code": "",
+            "source_date": _news_value(item, "source_date"),
+            "source_url": _news_value(item, "source_url", ""), "verified": False,
+        }
+    matches = []
+    for asset in assets:
+        if (_news_value(asset, "category") != category
+                or _news_value(asset, "source_url") != _news_value(item, "source_url")
+                or str(_news_value(asset, "source_date")) != str(_news_value(item, "source_date"))
+                or (category != "theme" and _news_value(asset, "verified") is not True)):
+            continue
+        candidate = FundRelatedAsset(category, _news_value(asset, "name", ""),
+                                     _news_value(asset, "source_url", ""), code=_news_value(asset, "code"))
+        if _headline_matches_related(_news_value(item, "title", ""), candidate):
+            matches.append((candidate, asset))
+    # Do not guess which company owns a multi-company headline or invent aliases.
+    if len(matches) != 1:
+        return "", "", "", None
+    asset, original = matches[0]
+    relationship = {"category": category, "name": asset.name, "code": asset.code or "",
+                    "source_date": _news_value(original, "source_date"),
+                    "source_url": _news_value(original, "source_url", ""),
+                    "verified": _news_value(original, "verified") is True}
+    return f"{category}:{asset.name}:{asset.code or ''}", asset.name, asset.code or "", relationship
+
+
+def _digest_title(item, entity_name, code):
+    title = unicodedata.normalize("NFKC", _plain(_news_value(item, "title"))).casefold()
+    # Remove only known trailing publisher navigation, never arbitrary clauses.
+    title = re.sub(r"_(?:公司新闻|新浪新闻)(?:_财经)?(?:_证券之星)?$", "", title)
+    title = re.sub(r"\s*-\s*cfi\.cn\s*中财网$", "", title)
+    if code:
+        title = re.sub(r"\(" + re.escape(code.casefold()) + r"(?:\.(?:sh|sz|bj|hk|us))?\)", "", title)
+    if entity_name:
+        title = title.removeprefix(unicodedata.normalize("NFKC", entity_name).casefold())
+    # Ignore spacing and headline punctuation, not words or numeric quantities.
+    return re.sub(r"[\s:：,，。;；!?！？]", "", title)
+
+
+_DIGEST_AMOUNT = re.compile(r"(?:不超过|不超|不低于|不少于|至多|最高|约)?\d+(?:\.\d+)?(?:亿|万)?元")
+_DIGEST_UPDATE = re.compile(
+    r"变更|调整|修订|取消|终止|撤销|失败|未获|不获|完成|实施|进展|首次|新增|延长|延期|"
+    r"增加|减少|提高|降低|上调|下调|暂停|恢复|注销|拟|计划|通过|取得|获得|签订|签署"
+)
+_DIGEST_FAMILIES = (
+    ("buyback", r"回购|\bbuyback\b"), ("earnings", r"财报|季报|年报|中报|业绩|营收|净利|盈利|亏损|\bearnings\b"),
+    ("dividend", r"分红|派息|\bdividend\b"), ("acquisition", r"收购|并购|\bmerger\b|\bacquisition\b"),
+    ("operations", r"申购|赎回|限额|基金经理"), ("legal", r"诉讼|处罚"),
+    ("contract", r"中标|订单|签订|签署"),
+)
+
+
+def _digest_signature(title):
+    families = tuple(key for key, pattern in _DIGEST_FAMILIES if re.search(pattern, title))
+    updates = tuple(sorted(set(_DIGEST_UPDATE.findall(title))))
+    numbers = tuple(re.findall(r"\d+(?:\.\d+)?", title))
+    return families, updates, numbers
+
+
+def _distinct_digest_event(left, right):
+    families, updates, numbers = left
+    other_families, other_updates, other_numbers = right
+    if not families or not other_families:
+        return False
+    if families != other_families or (numbers and other_numbers and numbers != other_numbers):
+        return True
+    # Different verbs alone (e.g. obtained/received) are not separate events.
+    # Keep explicit contradictory stages, rather than hiding an announced plan
+    # behind a cancellation or vice versa. Everything else remains in raw data.
+    opposing_stages = (({"暂停"}, {"恢复"}),
+                       ({"取消", "终止", "撤销", "失败", "未获", "不获"},
+                        {"拟", "计划", "通过", "取得", "获得", "实施", "完成"}))
+    a, b = set(updates), set(other_updates)
+    return any((a & first and b & second) or (a & second and b & first)
+               for first, second in opposing_stages)
+
+
+def _same_digest_event(left, right):
+    """Only exact normalized titles or a narrow loan-commitment variant.
+
+    This groups headline leads, not independently verified events. Dates and
+    qualification must agree, and every original source remains in the group.
+    """
+    if left["context"] != right["context"]:
+        return False
+    if left["title"] == right["title"]:
+        return True
+    # A common syndicated title omits the amount. Accept that omission only
+    # when the remaining specific commitment wording is identical. Differing
+    # amounts, caps, dates or update wording must never disappear in a merge.
+    a, b = left["title"], right["title"]
+    required = ("取得", "金融机构", "股票回购", "贷款承诺")
+    if not all(token in a and token in b for token in required):
+        return False
+    amounts_a, amounts_b = _DIGEST_AMOUNT.findall(a), _DIGEST_AMOUNT.findall(b)
+    if amounts_a and amounts_b and amounts_a != amounts_b:
+        return False
+    return (_DIGEST_AMOUNT.sub("", a).replace("承诺书", "承诺")
+            == _DIGEST_AMOUNT.sub("", b).replace("承诺书", "承诺"))
+
+
+def _digest_reporting_context(item, entity_key):
+    """Relationship priority is not an assessment of materiality or direction."""
+    if not entity_key:
+        return "unresolved", 4, "关联对象未能唯一绑定；仅保留标题线索，不推断基金影响。"
+    category = _news_value(item, "category", "")
+    if category in {"announcement", "direct_fund"}:
+        return "fund", 0, "本基金标题线索；应先核验公告或报道全文及适用范围，再判断影响。"
+    if category == "target_etf":
+        return "direct_target", 1, "目标ETF标题线索；身份关联不证明当前配置比例，基金影响方向与程度未知。"
+    if category == "holding":
+        return "historical_holding", 2, "历史披露股票的公司线索；应核对事件原文与当前敞口，不等于本基金重大事件。"
+    return "sector_background", 3, "行业或产品名称主题背景；不证明本基金当前配置，也不支持收益归因。"
+
+
+def select_news_digest(bundle, *, max_items: int = 3) -> dict:
+    """Read-only concise selection over live or saved qualified evidence.
+
+    Only already-fresh, model-eligible event/context leads enter this digest.
+    No source date is independently verified here and no relationship becomes
+    current exposure or causal evidence. Original bundle items and coverage are
+    untouched, including omissions; selected groups retain every source record.
+    The raw item_index is the canonical evidence index; source_indices retain
+    the other originals in a group. Relationship identity must resolve uniquely
+    against supplied assets. Reporting priority never establishes materiality,
+    a verified event, current exposure, or the direction of a fund's impact.
+    Counts describe this presentation pass, not additional search outcomes.
+    """
+    if type(max_items) is not int or not 1 <= max_items <= 3:
+        raise ValueError("News digest requires one to three items")
+    raw = _news_value(bundle, "items", []) or []
+    assets = _news_value(bundle, "related_assets", []) or []
+    counts = dict.fromkeys(("raw_items", "ineligible", "grouped_events", "duplicate_events",
+                            "duplicate_urls", "entity_limit", "selection_limit", "selected"), 0)
+    counts["raw_items"] = len(raw)
+    candidates = []
+    for index, item in enumerate(raw):
+        published = _publication(_news_value(item, "published_date"))
+        scope = _news_value(item, "evidence_scope")
+        if (_news_value(item, "date_status") != "fresh" or _news_value(item, "model_eligible") is not True
+                or scope not in {"fund_event", "related_event", "sector_context"} or published is None
+                or not _plain(_news_value(item, "title")) or not _safe_url(_news_value(item, "url"))):
+            counts["ineligible"] += 1
+            continue
+        key, name, code, relationship = _digest_entity(item, assets)
+        reporting_context, priority, relevance_note = _digest_reporting_context(item, key)
+        title = _digest_title(item, name, code)
+        families, updates, numbers = _digest_signature(title)
+        # Direct fund and target ETF leads precede historical company/sector
+        # background. This is reporting priority, not verified significance.
+        rank = (priority,
+                not bool(families), -published.toordinal(), -len(title), index)
+        context = (key or "unresolved:" + _safe_url(_news_value(item, "url")),
+                   _news_value(item, "category"), scope, published,
+                   str(_news_value(item, "source_date")), _news_value(item, "source_url"),
+                   _news_value(item, "relation_basis"))
+        candidates.append({"item": item, "sources": [item], "entity_key": key, "entity_name": name,
+                           "item_index": index, "source_indices": [index], "relationship": relationship,
+                           "reporting_context": reporting_context, "relevance_note": relevance_note,
+                           "verification_status": "headline_only_unverified", "impact_status": "unknown",
+                           "title": title, "signature": (families, updates, numbers),
+                           "context": context, "rank": rank})
+    groups = []
+    for candidate in sorted(candidates, key=lambda c: c["rank"]):
+        duplicate = next((group for group in groups if _same_digest_event(group, candidate)), None)
+        if duplicate is None:
+            groups.append(candidate)
+            continue
+        url = _safe_url(_news_value(candidate["item"], "url"))
+        same_url = any(_safe_url(_news_value(source, "url")) == url for source in duplicate["sources"])
+        counts["duplicate_urls" if same_url else "duplicate_events"] += 1
+        duplicate["sources"].append(candidate["item"])
+        duplicate["source_indices"].append(candidate["item_index"])
+    counts["grouped_events"] = len(groups)
+    primary, additional, by_entity = [], [], {}
+    for group in groups:
+        key = group["entity_key"] or f"unresolved:{group['rank'][-1]}"
+        previous = by_entity.setdefault(key, [])
+        if not previous:
+            primary.append(group)
+            previous.append(group)
+            continue
+        # At most one extra material event per company, after other companies
+        # get their first slot. A different publication day alone is not proof
+        # of a new material event. Generic board notices stay in raw evidence.
+        distinct = all(_distinct_digest_event(group["signature"], prior["signature"]) for prior in previous)
+        if len(previous) < 2 and distinct:
+            additional.append(group)
+            previous.append(group)
+        else:
+            counts["entity_limit"] += 1
+    # Preserve entity diversity within each relationship tier, without letting
+    # a second direct event fall behind a historical-company headline.
+    selection = sorted(primary + additional, key=lambda group: group["rank"][0])
+    counts["selection_limit"] = max(0, len(selection) - max_items)
+    selection = selection[:max_items]
+    counts["selected"] = len(selection)
+    fields = ("item", "sources", "entity_key", "entity_name", "item_index", "source_indices",
+              "relationship", "reporting_context", "relevance_note", "verification_status", "impact_status")
+    return {"items": [{key: group[key] for key in fields} for group in selection], "counts": counts}
+
+
 def _relations(data: FundData, as_of: date):
     assets, warnings = [], []
     for asset in data.related_assets[:20]:

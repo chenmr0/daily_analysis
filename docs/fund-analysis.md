@@ -2,20 +2,31 @@
 
 场外基金使用独立身份 `fund:六位代码` 和净值数据契约，不进入股票/场内ETF的 OHLCV、技术择时、LLM评级、止损点或回测链路。裸六位股票代码原有含义保持不变；不要把场外基金代码放进 `STOCK_LIST`。
 
-## 首屏操作参考
+## 简短日报与完整快照
 
-报告开头先集中展示全部基金状态速览，再逐只展示由纯程序生成的操作参考、未持有/已持有两种适用情形、证据日期和改变判断前需要核验的条件，再展示横向数据、AI观点与详细资料。读取失败的基金同样保留“无法判断”卡片。
+邮件直接进入逐基金卡片：标题、一次AI状态；有效新模型响应先给条件式操作倾向、理由、成立条件、改变判断的证据和主要风险，再列净值及实际区间、约3个月变化、历史最大回撤和有日期的关联资料。旧模型响应兼容保留原章节并明确未提供操作判断；AI失败不填固定观望或生成替代建议。无宽表、全体“观望”速览、重复操作参考、通用开场和免责声明末尾。每只基金的“区间观察”只比较自身有效区间方向，不比较基金强弱，不生成买卖指令。若同报告期股票名单出现完全相同代码和名称，末尾最多列两项历史交集，不声称当前完整持仓重合度。年初至今等全部原始指标继续保留在JSON。
 
-- `conditional / observe`：必要的近1月、近3月净值证据可用，但未取得个人背景和申赎规则，结论为**观望**。若未持有，暂不依据本报告新增买入；若已持有，是否卖出尚不能判断，须核对原定退出条件、资金期限和可承受风险范围。观望不表示继续持有安全，也不声称这些个人条件已触发。
-- `unavailable / undetermined`：必需净值/区间证据不可用、数值或日期不合格、或本基金操作参考组件失败。不能把无法判断伪装成中性趋势。净值、AI状态和其他基金参考不受单只参考组件失败影响；参考失败不另改原有CLI退出码与通知语义。
-- 正、负、零只描述各自实际区间的历史方向，使用未舍入值；极小非零值不显示为“持平”。同涨不等于买入候选，同跌不自动触发卖出评估。没有交易评分、价格、仓位、收益目标、回撤买卖阈值或已验证择时策略。
-- 现有 `analyze_fund` 是指标与事件门控的真源。操作参考消费其 `Metric`，不重算收益或补齐 N/A；同时拒绝非有限值、布尔值、越界值、错误结束日期与不符合原有日历月锚点7自然日容差的起点。近12个月最大回撤历史不足时可以 N/A，不把短期历史冒充年指标。它是历史最差峰谷跌幅，非当前回撤、个人亏损或止损条件；本次没有新增波动率等指标。
-- 币种未知在每卡明确显示“未核验”，不猜人民币、不作金额换算或跨基金优劣比较；同一基金已有的无量纲历史净值变化仍可保留。报告截止日不等于净值所属日，抓取日不等于真实披露日；周末、假期、QDII或自然日间隔都不机械产生买卖或失效判断。参考仅说明所示历史证据，不能视为实时行情。
-- 改变判断前须核验个人条件、当前申赎状态/限额/费用/确认与到账规则，并在新有效净值或证据补齐后重新核对。新闻与历史持仓不是交易触发器，未建立基金穿透或收益归因。
+- 月份算法不变：以最新净值日的日历月锚点为准，取锚点当日或之前且不超7自然日容差的净值。主展示用真实起止日期和天数，而非假称精确30天。同属标题年份的区间简写MM-DD，跨年或非标题年份区间保留完整年份；JSON日期完整保留。例如2026-09-30至2026-11-06是37天；QDII截至11月5日则是36天。其他月份标签加“约”，模型程序事实标签同步调整。
+- 最大回撤就近标注“历史峰谷，非当前回撤”。分红/拆分、历史不足、缺失日期或其他失败原因继续显示N/A，不用AI失败代替数据失败；带失败原因的Metric即使有数值也不用于摘要观察。
+- 持仓只概括所列报告期股票明细的合计、两项较大披露及一项主要历史行业，完整列表保留JSON。联接基金的直接股票明细不等于目标ETF底层持仓；未知关系日期不补造。收益数据不推断当前持仓，也不作跨币种金额换算。
+- 新闻摘要最多两个条目，复用既有合格条件，只采用fresh、model_eligible且非宽泛背景的线索。同主体同日相近标题可合并，优先不同关联对象，再按额度保留明确不同的重要事件；不同金额或明确更新不合并。原始检索结果、资格、coverage和reason_counts不改。摘要按本基金、目标ETF、历史股票、行业背景优先，保留item_index/source_indices，普通news事实保留原始编号，结构化影响只绑定与报告相同的两个规范摘要标题；此顺序仅表示关联直接程度，不证明事件重大或利好利空。完整来源仍在news_evidence；晚于净值日的新闻就近标注为后续线索，不能解释先前已记录净值变化。
+- 整批AI超时只显示一次；部分成功时显示已接受的重点观点、证据链接、实际模型和逐基金状态，全部章节保存在JSON，未通过观点不展示。技术诊断留在JSON与日志，不在邮件重复打印。数据获取失败仍单列并保留其他基金。
 
-操作参考在AI调用前冻结，独立保存在JSON的 `action_references`，`method=evidence_boundary_v1`。该方法是证据边界提示，不是买卖策略。模型不接收或改写这些卡片，不接收任何新增个人背景；关闭AI、单只/横向拒绝、恶意模型买卖文本或模型故障都不改变程序参考。现有严格交易词与其他AI校验保持不变。纯函数只接收公开基金分析与截止日期，本版本不收集或保存个人持仓、成本、期限、风险偏好。
+JSON维持**schema 4**和既有字段。兼容字段`action_references`仍在AI前由程序生成和冻结，但不再在邮件/Markdown渲染。它的`conditional / observe`与`unavailable / undetermined`契约未改，不是交易策略，也不反向控制本次摘要。`analyses`、`failed_codes`、`news`、`news_evidence`、逐基金/横向AI状态及`notification`继续完整保存。没有新增配置、Web/API消费端、股票行为、定时或通知路由；同一Markdown仍交给既有邮件纯文本与HTML发送流程。
 
-快照新增 `action_references` 并升至 **schema 4**，原有 `analyses`、`failed_codes`、新闻、AI逐基金/横向状态及 `notification` 保留。按基金代码索引的参考包含状态、操作标签、适用情形、日期、指标证据、固定原因、后续核验条件和边界。只接受schema 3的外部读取脚本须显式接受4，并区分上述两种状态；没有新增Web/API消费端、配置项、股票行为、定时或通知路由。
+## 条件式研究判断与新闻影响
+
+`FundInsight`新增可选`decision`和`news_impacts`，不改股票流程或通知次数。新prompt要求每只基金给判断；旧模型JSON允许缺省，不能把缺省转为“观望”。
+
+- `decision`恰含`direction`、`rationale`、`conditions`、`invalidation`。方向只允许`consider_buy`（有条件新增）、`consider_reduce`（若已持有时研究减仓）、`watch`、`undetermined`；其余为原有`text/evidence_ids`对象。程序只渲染这些枚举，不由净值涨跌规则选择方向。
+- 有操作倾向的理由必须同时引用通过原始指标检查的本基金metric和有报告期的股票/行业资料或来源绑定目标ETF关系。指标的数值、失败原因、实际起止日期和取值范围均再检查。这只是最低证据门槛，不证明方向正确、个人适合或策略经过回测。
+- 不能假设用户持有、成本、风险能力或交易期限。条件必须说明需要核验的具体事实，不能仅重复通用免责声明。自由文字的编造数值、交易命令、收益预测、保证、当前持仓、排名和确定性因果禁令不松绑；操作方向仅由独立枚举表达。直接对接收者作断言（你/您/用户等）及没有条件或核验语境的个人资金/经验/风险能力陈述被拒；中性核验条件允许，这仍是有限词法检查。
+- 有新判断时，邮件不重复展开旧conclusion/evidence/observations；这些章节完整保留JSON。依据以可读的“历史持仓/净值区间”等日期链接显示，不露出程序事实ID。
+- `news_impacts`最多三项，恰含`news_evidence_id`、`relationship_evidence_id`、`transmission`。新闻须通过时效和资格筛选，关联须按主体、类别、日期和来源重新绑定到同基金输入；不能拿任意同基金资料背书。历史关联报告期不能晚于新闻日期。
+- `transmission`只引用该新闻及绑定关系，以“若…可能…”写传导假设，不预测基金净值方向。程序固定`verification=unverified_lead`、`magnitude=unknown`，模型不能自行改成已证实。标题并非原文核验，历史名单不证明当前持有，未找到新闻不代表没有事件。
+- 本轮不增加网页正文获取、基准/估值/资金流/个人组合接口。没有这些数据时，应明确缺证而非编造“重大新闻”或盈利催化。通用语言守门仍可能误拒合法说法，也不能证明每项自由推理成立；实际模型质量、时延、成本需单独在线验证。
+
+离线示例使用2026-11-09历史快照和人工编写的模拟响应，经真实`interpret_funds`校验与报告渲染；不是恢复的模型原文，也不证明真实模型会输出相同结果。实际Run10未取得可用AI输出。
 
 ## 使用
 
@@ -157,19 +168,19 @@ Run8 的018123与025500只留存了 `conclusion[0]` 的 `unsafe_claim`、字符�
 - `historical_evidence_missing` 的 `guard_reason`：`target_not_snapshot`、`topic_unspecified`、`dated_fact_missing`、`historical_marker_missing`，依次对应目标关系不是配置快照、主题不明确、缺少同范围同主题有效日期事实、该分句没有历史限定。
 - 同错误可附 `exposure_topic=target/unspecified/holdings/allocation/mixed`、从零开始且不超过600的 `clause_index`；仅 `dated_fact_missing` 可附 `missing_fact_kind=dated_holdings/dated_allocation/both`。分句索引包含连续分隔符形成的空段，不是原文字符偏移。
 
-这些字段穿过错误包装、单基金/横向范围、最终JSON、Markdown及日志的白名单清洗；不保存原句、命中词、未知引用ID或异常内容。仍只报告各范围首个阻断，不说明后续检查已通过，旧记录不补猜新字段。schema 4、操作参考卡片、五个既有完整风险模板、缺失短句、逐基金隔离与所有事实门控保持不变。
+这些字段穿过错误包装、单基金/横向范围、最终JSON及日志的白名单清洗；不保存原句、命中词、未知引用ID或异常内容。仍只报告各范围首个阻断，不说明后续检查已通过，旧记录不补猜新字段。schema 4、兼容操作参考JSON、五个既有完整风险模板、缺失短句、逐基金隔离与所有事实门控保持不变。
 
 Run9 的001672与025500只保留 `evidence[0]` 的 `historical_evidence_missing` / `chinese_numeral` 以及安全计数；失败原句及实际引用ID不可用，无法确定真实原因或证明这两条失败已经解决。本次回归使用真实公开输入最小投影、真实留存的018123已接受渲染结果及明确标记的合成案例。025500的实际资料包含该完整行业名称，不能据此推断它的失败原句使用了此词。没有重放真实模型输出，也未调用模型、新闻、SMTP或Actions。
 
-横向表只并列净值日期与真实指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
+邮件逐基金卡片只显示真实净值日期和指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
 
-状态 `ok/partial/disabled/unavailable/model_failed` 均有原因：`ok` 表示全部单基金及必需横向观察通过；`partial` 表示至少一只基金通过，但其他基金或横向观察被拒绝；没有可采用的单基金观点时为 `model_failed`。`fund_statuses` 为每只进入模型输入的基金保存 `status/reason/diagnostics`，数据抓取失败仍单列于 `failed_codes`；`comparison_status` 同样记录横向状态，单基金正常响应为 `not_applicable`。关闭、不可用或整批失败时各范围也显式记录原因。报告显示整体、各基金及横向状态，部分成功时仅显示通过的模型结论，不再声称全部结论均不可用。
+状态 `ok/partial/disabled/unavailable/model_failed` 均有原因：`ok` 表示全部单基金及必需横向观察通过；`partial` 表示至少一只基金通过，但其他基金或横向观察被拒绝；没有可采用的单基金观点时为 `model_failed`。`fund_statuses` 为每只进入模型输入的基金保存 `status/reason/diagnostics`，数据抓取失败仍单列于 `failed_codes`；`comparison_status` 同样记录横向状态，单基金正常响应为 `not_applicable`。关闭、不可用或整批失败时各范围也显式记录原因。报告整批失败时合并为一句状态，部分成功时显示通过的重点模型观点和各失败范围状态，完整章节保留JSON，不声称全部结论均不可用。
 
-`interpretation.diagnostics` 及各范围的 `diagnostics` 在JSON、报告和标准日志中保留白名单诊断：固定阶段/错误码、已确认基金代码、章节及从零开始的位置索引，另有字符数、字节数、引用数或JSON行列等计数。诊断不保存模型原文、证据文本、未知字段、未知引用ID、密钥或供应商异常字符串；未知诊断字段丢弃。每个失败范围仅报告首个阻断校验，不表示其他校验已经通过；全局失败不尝试局部恢复。报告边界再次清洗每个范围的诊断。单次调用、通知路由、发送次数和CLI退出语义不变，不追加模型调用或自动发送。
+`interpretation.diagnostics` 及各范围的 `diagnostics` 在JSON和标准日志中保留白名单诊断：固定阶段/错误码、已确认基金代码、章节及从零开始的位置索引，另有字符数、字节数、引用数或JSON行列等计数。诊断不保存模型原文、证据文本、未知字段、未知引用ID、密钥或供应商异常字符串；未知诊断字段丢弃。每个失败范围仅报告首个阻断校验，不表示其他校验已经通过；全局失败不尝试局部恢复。服务边界再次清洗每个范围的诊断；邮件仅保留可读状态和原因。单次调用、通知路由、发送次数和CLI退出语义不变，不追加模型调用或自动发送。
 
 仅凭HTTP成功不代表解读通过。此前只保留统一校验错误的报告不能回溯具体子校验原因；新诊断只适用于应用补丁后的运行。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
 
-最多二十只基金、提示词一百五十KB、输出四十八KB、输出token上限六千。默认报告等待四十五秒，单进程只有一个未结束请求。等待期限不是网络硬取消：已有云端请求或配置回退可能继续至底层超时并产生费用；迟到结果不采用，也不补发报告或邮件。
+最多二十只基金、提示词一百五十KB、输出四十八KB、输出token上限六千。默认模型阶段总等待一百二十秒（包含分析器初始化），SDK请求超时最多九十秒，并扣除初始化已耗时间、预留三十秒处理余量；缩短程序调用的 `timeout_seconds` 时，余量同步缩为其四分之一。基金仅尝试首个配置模型，关闭应用层参数恢复、模型/后端回退，并向LiteLLM Router/SDK传入零重试参数；股票默认策略不变，仍支持原有云端提供商。单进程只有一个未结束请求。上述时间不是端到端硬截止，零重试参数也不是单次HTTP保证：SDK超时可能按网络阶段计时，提供商适配器内部兼容修复、LiteLLM全局设置或已有客户端可能另行重发。Python线程无法硬取消在途请求，服务端仍可能继续处理并产生费用；迟到结果不采用，也不补发报告或邮件。
 
 ## 已知范围限制
 
@@ -216,3 +227,11 @@ ASCII periods now end exposure clauses, including fullwidth periods and ellipses
 Optional safe diagnostics preserve the original primary codes: `detection_view=joined/boundary`; `guard_reason=unapproved_numeral` for `chinese_numeral`; and `target_not_snapshot/topic_unspecified/dated_fact_missing/historical_marker_missing` for `historical_evidence_missing`. The latter may include `exposure_topic=target/unspecified/holdings/allocation/mixed`, bounded zero-based `clause_index`, and, only for missing dated facts, `missing_fact_kind=dated_holdings/dated_allocation/both`. Clause indices include empty segments from consecutive delimiters. Finite typed allowlists cover rewrapping, per-fund and comparison isolation, Markdown, JSON and logs. No original text, matched word, unknown reference ID or exception is retained; old diagnostics are not enriched by guessing. Schema 4, action references, all five existing complete risk templates, missing-data clauses and first-failure reporting are unchanged.
 
 Run9 did not retain the rejected 001672/025500 text or actual citation IDs. Their real causes cannot be reconstructed or claimed resolved. The fixture projects real public inputs, retains real accepted 018123 rendered statements, and explicitly labels new narratives as synthetic. Inverse fact substitution creates derived validation examples, not recovered model output. The observed retail industry name motivates a reproducible defect case but does not prove that name appeared in the rejected sentence. Validation is offline only, with no model, news, SMTP or Actions calls.
+
+### Concise email presentation
+
+The email now starts with per-fund cards after one AI status line, without generic action-reference blocks, a wide comparison table or repeated disclaimers. Accepted new responses lead with conditional research direction, rationale, prerequisites and invalidation evidence; legacy responses explicitly lack a decision, and failures never synthesize an observe/buy/sell view. Actual period dates and day counts lead the recent NAV change; approximate-month labels do not change the underlying calendar-anchor algorithm. Within-fund observations describe valid historical directions only. Historical holdings and post-NAV news are dated, with canonical raw indices retained for the same two headlines eligible for structured impacts and report display. Exact subject/date/source binding permits only unverified conditional news impacts with unknown magnitude. Full accepted AI sections and citations are preserved in JSON; raw metrics, full news, safe diagnostics and backward-compatible action_references stay in schema-4 JSON. The shared notification route and one-send behavior are unchanged.
+
+### Conditional research contract (English)
+
+Optional decision and news_impacts extend FundInsight within schema 4. Directions are closed enums, not personal trading instructions. Actionable opinions require a revalidated same-fund metric plus substantive dated holdings/allocation or target-ETF relationship evidence; this necessary gate does not validate investment suitability or strategy effectiveness. Existing prose guards remain unchanged. News hypotheses must bind an eligible title to its exact source relationship and cannot assert a verified event, current exposure, causal NAV attribution or predicted return. No new online source, credentials, workflow, configuration or notification path is introduced. Offline examples use explicitly hand-authored fake model responses, never real AI outputs.

@@ -90,6 +90,16 @@ def test_real_retained_accepted_statements_roundtrip_without_claiming_recovered_
     analyses = run9_inputs()
     facts, _ = module._build_context(analyses, {})
     retained = json.loads(FIXTURE.read_text())["retained_accepted"]["018123"]
+    # The retained record predates the display-only metric-label clarification.
+    # Translate labels before recovering placeholders; do not change old bytes.
+    retained = copy.deepcopy(retained)
+    labels = {"近一个月收益": "约1个月区间净值变化", "近三个月收益": "约3个月区间净值变化",
+              "近六个月收益": "约6个月区间净值变化", "近十二个月收益": "约12个月区间净值变化",
+              "近十二个月最大回撤": "约12个月区间最大回撤"}
+    for items in retained.values():
+        for item in items:
+            for old, new in labels.items():
+                item["text"] = item["text"].replace(old, new)
     derived = copy.deepcopy(retained)
     for items in derived.values():
         for item in items:
@@ -99,7 +109,10 @@ def test_real_retained_accepted_statements_roundtrip_without_claiming_recovered_
     next(x for x in output["funds"] if x["fund_code"] == "018123").update(derived)
     result = module.interpret_funds(analyses, config=configuration(), analyzer_factory=fake_factory(output))
     assert result.status == "ok", result.diagnostics
-    assert asdict(result.funds["018123"]) == retained
+    expanded = asdict(result.funds["018123"])
+    assert {key: expanded[key] for key in module._SECTIONS} == retained
+    assert expanded["decision"] is None and expanded["news_impacts"] == []
+    assert set(expanded) == {*module._SECTIONS, "decision", "news_impacts"}
 
 
 @pytest.mark.parametrize("section", [*module._SECTIONS, "comparison"])
@@ -170,7 +183,9 @@ def test_private_permission_is_not_a_fact_or_snapshot_field_and_plain_mappings_f
     assert "industry_term_refs" not in module._make_prompt(analyses, facts, context)
     assert set(asdict(facts[RETAIL_REF])) == {
         "evidence_id", "fund_codes", "kind", "text", "source_url", "data_date", "allowed_limitations",
+        "relationship_evidence_ids",
     }
+    assert facts[RETAIL_REF].relationship_evidence_ids == []
 
 
 @pytest.mark.parametrize("term", [
@@ -316,8 +331,8 @@ def test_new_details_are_scrubbed_and_preserved_across_full_service(tmp_path, ca
         assert diagnostic["guard_reason"] == "historical_marker_missing" and diagnostic["detection_view"] == "joined"
     comparison = saved["interpretation"]["comparison_status"]["diagnostics"]
     assert comparison["missing_fact_kind"] == "dated_holdings" and "detection_view" not in comparison
-    assert "historical\\_marker\\_missing" in report.markdown
-    assert "dated\\_fact\\_missing" in report.markdown and "dated_fact_missing" in caplog.text
+    assert "historical\\_marker\\_missing" not in report.markdown
+    assert "dated\\_fact\\_missing" not in report.markdown and "dated_fact_missing" in caplog.text
     assert "historical_marker_missing" in caplog.text
     for private in ("SECRET_RAW", "SECRET_HIT", "SECRET_REF", "SECRET_VIEW", "私密原句不可转存"):
         assert private not in raw + report.markdown + caplog.text

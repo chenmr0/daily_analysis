@@ -263,7 +263,7 @@ def test_real_service_keeps_accepted_fund_and_scrubs_categories_in_all_outputs(t
     assert saved["interpretation"]["status"] == "partial"
     assert set(saved["interpretation"]["funds"]) == {"018123"}
     assert saved["interpretation"]["fund_statuses"]["025500"]["diagnostics"]["claim_category"] == "guarantee"
-    assert "claim_category=guarantee" in report.markdown.replace("\\", "")
+    assert "claim_category=guarantee" not in report.markdown.replace("\\", "")
     assert '"claim_category": "guarantee"' in caplog.text
     assert RETURN_RISK in report.markdown
     assert report.notification_status == "disabled"

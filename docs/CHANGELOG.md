@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 基金解读新增独立条件式研究方向、理由、成立条件和反证；先展示判断再展示数据，兼容旧响应而不补造观望。新闻按直接关联程度选取并绑定主体/日期/来源，允许未核实、未知幅度的条件式影响假设；保留事实与当前性守门、单基金隔离及完整JSON。
+
+- [改进] 基金邮件改为逐基金短卡片，以实际净值日期、区间变化及具体历史证据开篇，删去重复操作参考与通用套话；保留完整JSON及已接受AI观点，整批超时只提示一次，月份标签用约数，新闻摘要合并相近线索并明确晚于净值日。
+
+- [修复] 基金AI模型阶段等待延长至120秒，按剩余预算设置最多90秒SDK超时；仅基金关闭应用重试/回退并请求Router/SDK零重试，保留现有提供商与线程限流，明确底层修复和线程无法硬取消的限制。
+
 - [修复] 基金AI仅凭原始结构化、同基金同主题带日期行业资料识别完整“批发和零售业”非数量术语，封堵点号分句借用历史限定，增加有限脱敏检测视图与历史证据分支诊断；保留schema 4、事实/当前性/数量/比较门控与逐基金隔离，Run9缺失原文不反推实际原因。（Fund AI: narrowly bind the fixed retail-industry term to structured dated evidence, close period-boundary history leakage, and add safe finite diagnostic details without weakening existing gates.）
 
 - [改进] 基金日报首屏增加独立程序操作参考，区分观望与证据不足无法判断，分别说明已持有/未持有情形、实际证据日期和后续核验条件；历史涨跌不映射买卖，AI守门/股票/通知行为不变，JSON追加action_references并升至schema 4。

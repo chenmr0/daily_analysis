@@ -3529,7 +3529,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
     ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
         preflight_error = self.get_generation_backend_config_error()
-        if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
+        allow_retries = generation_config.get("allow_retries", True)
+        if preflight_error is not None and (not allow_retries or not self._can_use_generation_fallback(preflight_error)):
             raise preflight_error
         backend_id, fallback_backend_id = self._resolve_generation_backend_config()
         used_fallback_backend = False
@@ -3544,7 +3545,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 audit_context=audit_context,
             )
         except GenerationError as exc:
-            if not exc.fallbackable or not fallback_backend_id:
+            if not allow_retries or not exc.fallbackable or not fallback_backend_id:
                 raise
             try:
                 fallback_backend = self._get_generation_backend(fallback_backend_id)
@@ -3674,9 +3675,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         )
         requested_temperature = generation_config.get('temperature', 0.7)
         requested_timeout = generation_config.get("timeout")
+        allow_retries = generation_config.get("allow_retries", True)
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
+        if not allow_retries:
+            models_to_try = models_to_try[:1]
 
         use_channel_router = self._has_channel_config(config)
 
@@ -3690,7 +3694,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         for model in models_to_try:
             last_model = model
             origins = route_deployment_origins(config.llm_model_list, model)
-            model_stream = bool(stream and not origins.has_hermes)
+            model_stream = bool(stream and not origins.has_hermes and allow_retries)
             recovery_model_list = config.llm_model_list
             legacy_router_model_list = getattr(self, "_legacy_router_model_list", None) or []
             if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
@@ -3773,6 +3777,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     call_kwargs["timeout"] = requested_timeout
                 if hint_result.diagnostics:
                     logger.debug("[PromptCache] %s", hint_result.diagnostics)
+                if not allow_retries:
+                    # Request-scoped best effort. Provider adapters may still perform
+                    # internal compatibility recovery; this is not a one-HTTP guarantee.
+                    call_kwargs.update(num_retries=0, max_retries=0, fallbacks=[],
+                                       context_window_fallback_dict={})
+                    if uses_router:
+                        call_kwargs.update(disable_fallbacks=True, context_window_fallbacks=[],
+                                           content_policy_fallbacks=[])
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
@@ -3840,19 +3852,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         response_validator(_stream_text)
                     return _stream_text, actual_model, _stream_usage
 
-                response = call_litellm_with_param_recovery(
-                    lambda kwargs: self._dispatch_litellm_completion(
-                        model,
-                        kwargs,
-                        config=config,
-                        use_channel_router=use_channel_router,
+                def dispatch(kwargs):
+                    return self._dispatch_litellm_completion(
+                        model, kwargs, config=config, use_channel_router=use_channel_router,
                         router_model_names=router_model_names,
-                    ),
-                    model=model,
-                    call_kwargs=call_kwargs,
-                    model_list=recovery_model_list,
-                    logger=logger,
-                )
+                    )
+
+                if allow_retries:
+                    response = call_litellm_with_param_recovery(
+                        dispatch, model=model, call_kwargs=call_kwargs,
+                        model_list=recovery_model_list, logger=logger,
+                    )
+                else:
+                    response = dispatch(call_kwargs)
 
                 response_model, response_provider = self._resolve_response_model_provider(
                     response,
@@ -3970,9 +3982,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         *,
         timeout_seconds: Optional[float] = None,
         system_prompt: Optional[str] = None,
+        allow_retries: bool = True,
     ) -> Optional[GenerationResult]:
-        """Generate text and return the actual backend/model used for diagnostics."""
+        """Generate text with metadata; optionally skip application retries/fallbacks.
+
+        ``allow_retries=False`` also requests zero Router/SDK retries. It cannot
+        disable every provider's internal repair or cancel an in-flight request.
+        """
         generation_config = {"max_tokens": max_tokens, "temperature": temperature}
+        if not allow_retries:
+            generation_config["allow_retries"] = False
         if timeout_seconds is not None:
             if isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
                 raise ValueError("timeout_seconds must be finite and positive")
@@ -3993,10 +4012,12 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             raise
         except _AllModelsFailedError as exc:
             backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+            if not allow_retries:
+                fallback_backend_id = ""
             if not fallback_backend_id and backend_id == LITELLM_BACKEND_ID:
                 logger.warning(
-                    "[generate_text_with_metadata] Primary LiteLLM exhausted all configured models; "
-                    "returning empty GenerationResult so caller fallback can continue"
+                    "[generate_text_with_metadata] Primary LiteLLM generation failed; "
+                    "returning empty GenerationResult for caller handling"
                 )
                 usage = dict(exc.last_usage or {})
                 if exc.last_provider:

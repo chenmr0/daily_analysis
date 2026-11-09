@@ -1,12 +1,18 @@
 """Offline regressions for reconstructed fund evidence and bounded selection."""
+from copy import deepcopy
+from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
 from src.core.fund_analysis import FundData, FundProfile, FundRelatedAsset, Holding, HoldingsSnapshot, NavPoint
-from src.services.fund_news_service import EVIDENCE_SCOPES, FILTER_REASONS, REASON_LABELS, _headline_matches_fund, gather_fund_news
+from src.services.fund_news_service import (
+    EVIDENCE_SCOPES, FILTER_REASONS, REASON_LABELS, FundNewsBundle, FundNewsItem,
+    _headline_matches_fund, gather_fund_news, select_news_digest,
+)
 
 TODAY = date(2026, 11, 9)
 
@@ -447,3 +453,293 @@ def test_issuer_event_before_subject_change_remains_eligible():
     title = "新材料ETF重仓北方华创业绩增长，而宁德时代宣布回购"
     bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(title)), as_of=TODAY)
     assert bundle.items[0].model_eligible
+
+
+def digest_bundle(*titles, name="三环集团", code="300408"):
+    """Deterministic headline fixtures, not generated model interpretation."""
+    asset = FundRelatedAsset("holding", name, "https://fund.example.com/holdings",
+                             source_date=date(2026, 9, 30), code=code, verified=True)
+    return FundNewsBundle(items=[FundNewsItem(
+        "holding", title, f"https://news.example.com/{i}", "测试来源", date(2026, 11, 7), "fresh",
+        datetime(2026, 11, 9, tzinfo=timezone.utc),
+        f"{name}为2026-09-30已披露对象；不代表当前持仓，未作涨跌归因。",
+        source_date=asset.source_date, source_url=asset.source_url,
+        evidence_scope="related_event", model_eligible=True,
+    ) for i, title in enumerate(titles)], related_assets=[asset])
+
+
+def assert_digest_counts(digest):
+    counts = digest["counts"]
+    assert counts["raw_items"] == sum(counts[key] for key in (
+        "ineligible", "duplicate_urls", "duplicate_events", "entity_limit", "selection_limit", "selected"))
+    assert counts["grouped_events"] == counts["entity_limit"] + counts["selection_limit"] + counts["selected"]
+
+
+@pytest.mark.parametrize("saved_json", [False, True])
+def test_run10_loan_headline_variants_group_without_losing_evidence(saved_json):
+    # Exact titles preserved from Run10. The fixture dates are supplied search
+    # dates, not independent verification of either publication or event.
+    bundle = digest_bundle(
+        "三环集团取得不超8.1亿元金融机构股票回购贷款承诺_公司新闻_财经_证券之星",
+        "三环集团(300408.SZ)：取得金融机构股票回购贷款承诺书_公司新闻",
+    )
+    if saved_json:
+        bundle = json.loads(json.dumps(asdict(bundle), default=str, ensure_ascii=False))
+    original = deepcopy(bundle)
+    digest = select_news_digest(bundle, max_items=2)
+    assert bundle == original
+    assert digest["counts"]["duplicate_events"] == 1
+    assert digest["counts"]["selected"] == 1
+    group = digest["items"][0]
+    assert group["entity_name"] == "三环集团"
+    assert group["entity_key"] == "holding:三环集团:300408"
+    assert len(group["sources"]) == 2
+    raw_items = bundle["items"] if saved_json else bundle.items
+    assert group["item"] is raw_items[0]
+    assert group["sources"] == raw_items
+    assert_digest_counts(digest)
+
+
+def test_run10_board_notice_is_concentration_omission_not_duplicate():
+    # Exact saved titles. No model summary or causal claim is fabricated.
+    bundle = digest_bundle(
+        "君正股份：第六届董事会第十六次会议决议公告",
+        "君正股份(300223):变更回购股份用途并注销- CFi.CN 中财网",
+        name="君正股份", code="300223",
+    )
+    bundle.items[0].published_date = date(2026, 11, 8)
+    other = digest_bundle("兆易创新回购 11.65 亿，股份将全部注销|兆易创新|财联社|回购_新浪新闻",
+                          name="兆易创新", code="603986")
+    bundle.items += other.items
+    bundle.related_assets += other.related_assets
+    digest = select_news_digest(bundle, max_items=2)
+    assert digest["counts"]["grouped_events"] == 3
+    assert digest["counts"]["duplicate_events"] == 0
+    assert digest["counts"]["entity_limit"] == 1
+    assert {g["item"].title for g in digest["items"]} == {bundle.items[1].title, bundle.items[2].title}
+    assert_digest_counts(digest)
+
+
+@pytest.mark.parametrize("first,second", [
+    ("三环集团取得不超8.1亿元金融机构股票回购贷款承诺", "三环集团取得不超9.1亿元金融机构股票回购贷款承诺"),
+    ("三环集团取得不超8.1亿元金融机构股票回购贷款承诺", "三环集团取得不少于8.1亿元金融机构股票回购贷款承诺"),
+    ("三环集团取得金融机构股票回购贷款承诺", "三环集团取消金融机构股票回购贷款承诺"),
+    ("三环集团取得金融机构股票回购贷款承诺", "三环集团未取得金融机构股票回购贷款承诺"),
+    ("三环集团取得金融机构股票回购贷款承诺", "三环集团取得金融机构股票回购贷款承诺并变更用途"),
+    ("三环集团11月6日取得金融机构股票回购贷款承诺", "三环集团11月7日取得金融机构股票回购贷款承诺"),
+    ("三环集团公布回购计划", "三环集团完成回购计划"),
+    ("三环集团上调回购价格", "三环集团下调回购价格"),
+    ("三环集团公布增持计划", "三环集团公布减持计划"),
+    ("三环集团公布回购计划", "三环集团公布回购计划|取消回购"),
+])
+def test_digest_does_not_merge_amount_date_opposition_or_material_updates(first, second):
+    digest = select_news_digest(digest_bundle(first, second))
+    assert digest["counts"]["grouped_events"] == 2
+    assert digest["counts"]["duplicate_events"] == 0
+    assert_digest_counts(digest)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("published_date", date(2026, 11, 8)),
+    ("source_date", date(2026, 6, 30)),
+    ("source_url", "https://fund.example.com/other-period"),
+    ("relation_basis", "另一关联依据；不代表当前持仓"),
+    ("evidence_scope", "sector_context"),
+    ("category", "industry"),
+])
+def test_digest_does_not_merge_across_dates_relationships_or_scopes(field, value):
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团公布回购计划")
+    setattr(bundle.items[1], field, value)
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["grouped_events"] == 2
+    assert digest["counts"]["duplicate_events"] == 0
+    assert_digest_counts(digest)
+
+
+def test_digest_keeps_same_headline_event_for_different_companies_separate():
+    bundle = digest_bundle("三环集团公布回购计划")
+    other = digest_bundle("君正股份公布回购计划", name="君正股份", code="300223")
+    bundle.items += other.items
+    bundle.related_assets += other.related_assets
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["selected"] == 2
+    assert digest["counts"]["duplicate_events"] == 0
+    assert {g["entity_name"] for g in digest["items"]} == {"三环集团", "君正股份"}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("date_status", "unknown"), ("date_status", "future"), ("date_status", "stale"),
+    ("published_date", None), ("published_date", "昨天"),
+    ("model_eligible", False), ("model_eligible", "true"), ("model_eligible", 1),
+    ("evidence_scope", "weak_background"), ("evidence_scope", "unknown"),
+    ("url", "javascript:alert(1)"), ("title", ""),
+])
+def test_digest_never_promotes_ineligible_evidence_or_invents_date(field, value):
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团公布回购计划")
+    setattr(bundle.items[0], field, value)
+    original = deepcopy(bundle)
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["ineligible"] == 1
+    assert digest["counts"]["selected"] == 1
+    assert digest["items"][0]["sources"] == [bundle.items[1]]
+    assert bundle == original
+    assert_digest_counts(digest)
+
+
+def test_digest_exact_url_duplicates_keep_records_but_not_repeated_slots():
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团：公布回购计划")
+    bundle.items[1].url = bundle.items[0].url + "#source"
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["duplicate_urls"] == 1
+    assert digest["counts"]["duplicate_events"] == 0
+    assert len(digest["items"][0]["sources"]) == 2
+    assert_digest_counts(digest)
+
+
+def test_digest_exact_url_duplicate_can_group_without_guessing_missing_relationship():
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团公布回购计划")
+    bundle.related_assets = []
+    bundle.items[1].url = bundle.items[0].url
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["duplicate_urls"] == 1
+    assert digest["items"][0]["entity_name"] == ""
+    assert len(digest["items"][0]["sources"]) == 2
+
+
+def test_same_url_cannot_hide_materially_updated_title():
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团取消回购计划")
+    bundle.items[1].url = bundle.items[0].url
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["grouped_events"] == 2
+    assert digest["counts"]["selected"] == 2
+    assert_digest_counts(digest)
+
+
+def test_digest_prefers_entity_diversity_before_second_material_event():
+    bundle = digest_bundle("三环集团公布季度财报", "三环集团公布回购计划", "三环集团获得新订单")
+    other = digest_bundle("君正股份公布业绩增长", name="君正股份", code="300223")
+    bundle.items += other.items
+    bundle.related_assets += other.related_assets
+    digest = select_news_digest(bundle, max_items=2)
+    assert {g["entity_name"] for g in digest["items"]} == {"三环集团", "君正股份"}
+    assert digest["counts"]["entity_limit"] == 1
+    assert digest["counts"]["selection_limit"] == 1
+    assert_digest_counts(digest)
+    expanded = select_news_digest(bundle, max_items=3)
+    assert expanded["counts"]["selected"] == 3
+    assert expanded["counts"]["entity_limit"] == 1
+    assert_digest_counts(expanded)
+
+
+def test_digest_different_verbs_alone_do_not_create_second_company_slot():
+    bundle = digest_bundle("三环集团取得金融机构股票回购贷款承诺", "三环集团获得金融机构股票回购贷款承诺")
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["duplicate_events"] == 0
+    assert digest["counts"]["entity_limit"] == 1
+    assert digest["counts"]["selected"] == 1
+
+
+def test_digest_missing_or_ambiguous_relationship_never_guesses_company():
+    bundle = digest_bundle("苹果公布回购计划", "苹果公布回购计划", name="苹果", code="AAPL")
+    # Existing holding identity gate requires the disclosed code for short names.
+    digest = select_news_digest(bundle)
+    assert all(group["entity_key"] == "" for group in digest["items"])
+    assert digest["counts"]["duplicate_events"] == 0
+    bundle = digest_bundle("三环集团公布回购计划", "三环集团公布回购计划")
+    bundle.related_assets[0] = replace(bundle.related_assets[0], verified=False)
+    assert all(group["entity_key"] == "" for group in select_news_digest(bundle)["items"])
+
+
+@pytest.mark.parametrize("max_items", [0, 4, True, 1.5])
+def test_digest_rejects_expanded_or_invalid_bounds(max_items):
+    with pytest.raises(ValueError):
+        select_news_digest(FundNewsBundle(), max_items=max_items)
+
+
+@pytest.mark.parametrize("saved_json", [False, True])
+def test_digest_exposes_canonical_indices_and_relationship_without_upgrading_evidence(saved_json):
+    bundle = digest_bundle(
+        "三环集团(300408.SZ)：取得金融机构股票回购贷款承诺书_公司新闻",
+        "三环集团取得不超8.1亿元金融机构股票回购贷款承诺_公司新闻_财经_证券之星",
+    )
+    if saved_json:
+        bundle = json.loads(json.dumps(asdict(bundle), default=str, ensure_ascii=False))
+    raw = bundle['items'] if saved_json else bundle.items
+    original = deepcopy(bundle)
+    group = select_news_digest(bundle)['items'][0]
+    assert group['item_index'] == 1
+    assert group['source_indices'] == [1, 0]
+    assert group['item'] is raw[1]
+    assert group['sources'] == [raw[i] for i in group['source_indices']]
+    assert group['reporting_context'] == 'historical_holding'
+    assert group['verification_status'] == 'headline_only_unverified'
+    assert group['impact_status'] == 'unknown'
+    assert group['relationship'] == {
+        'category': 'holding', 'name': '三环集团', 'code': '300408',
+        'source_date': '2026-09-30' if saved_json else date(2026, 9, 30),
+        'source_url': 'https://fund.example.com/holdings', 'verified': True,
+    }
+    assert '不等于本基金重大事件' in group['relevance_note']
+    assert bundle == original
+
+
+@pytest.mark.parametrize('mismatch', ['source_date', 'source_url', 'identity', 'ambiguous', 'verified'])
+def test_digest_does_not_bind_an_unrelated_or_ambiguous_asset(mismatch):
+    bundle = digest_bundle('三环集团公布回购计划')
+    asset = bundle.related_assets[0]
+    if mismatch == 'source_date':
+        asset.source_date = date(2026, 6, 30)
+    elif mismatch == 'source_url':
+        asset.source_url = 'https://fund.example.com/another'
+    elif mismatch == 'identity':
+        asset.name = '其他公司'
+    elif mismatch == 'verified':
+        asset.verified = False
+    else:
+        bundle.related_assets.append(replace(asset, code='999999'))
+    group = select_news_digest(bundle)['items'][0]
+    assert group['relationship'] is None
+    assert group['entity_key'] == ''
+    assert group['reporting_context'] == 'unresolved'
+    assert group['impact_status'] == 'unknown'
+
+
+def test_digest_prioritizes_fund_then_target_before_historical_company_and_sector():
+    bundle = digest_bundle('三环集团公布回购计划')
+    stock = bundle.items[0]
+    target = FundRelatedAsset('target_etf', '测试ETF', 'https://fund.example.com/profile',
+                              code='510000', verified=True)
+    sector = FundRelatedAsset('industry', '半导体', 'https://fund.example.com/industry',
+                              source_date=date(2026, 9, 30), verified=True)
+    bundle.related_assets.extend([target, sector])
+    bundle.items.extend([
+        replace(stock, category='industry', title='半导体行业发布新政策', evidence_scope='sector_context',
+                url='https://news.example.com/sector', source_url=sector.source_url),
+        replace(stock, category='target_etf', title='测试ETF恢复申购',
+                url='https://news.example.com/target', source_url=target.source_url, source_date=None),
+        replace(stock, category='direct_fund', title='测试基金C暂停申购', evidence_scope='fund_event',
+                url='https://news.example.com/fund', source_url=target.source_url, source_date=None),
+    ])
+    digest = select_news_digest(bundle)
+    assert [g['reporting_context'] for g in digest['items']] == ['fund', 'direct_target', 'historical_holding']
+    assert [g['item_index'] for g in digest['items']] == [3, 2, 0]
+    assert digest['items'][1]['relationship']['code'] == '510000'
+    assert all(g['impact_status'] == 'unknown' for g in digest['items'])
+    assert_digest_counts(digest)
+
+
+def test_run10_digest_news_is_historical_background_not_confirmed_fund_events():
+    from pathlib import Path
+    fixture = json.loads((Path(__file__).parent / 'fixtures' / 'fund_brief_run10.json').read_text())
+    selected = []
+    for bundle in fixture['news_evidence'].values():
+        original = deepcopy(bundle)
+        digest = select_news_digest(bundle)
+        selected.extend(digest['items'])
+        assert bundle == original
+        assert_digest_counts(digest)
+    assert len(selected) == 4
+    assert all(g['reporting_context'] == 'historical_holding' for g in selected)
+    assert all(g['verification_status'] == 'headline_only_unverified' for g in selected)
+    assert all(g['impact_status'] == 'unknown' for g in selected)
+    assert all(g['relationship']['source_date'] == '2026-09-30' for g in selected)
