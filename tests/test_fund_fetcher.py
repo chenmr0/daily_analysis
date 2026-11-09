@@ -317,3 +317,100 @@ class FundRelatedSourceTests(unittest.TestCase):
         fetcher = FundFetcher(opener=opener_for())
         with patch.object(fetcher, "_load_related_assets", side_effect=AssertionError("must not fetch")):
             self.assertEqual(fetcher.fetch(CODE, as_of=date(2024, 1, 2)).related_assets, [])
+
+
+class FundNavCadenceTests(unittest.TestCase):
+    """Synthetic responses through the actual transport/parser, not Run11 replay."""
+
+    @staticmethod
+    def history(*pairs):
+        return json.dumps({"ErrCode": 0, "Data": {"LSJZList": [
+            {"FSRQ": day, "DWJZ": value, "NAVTYPE": "1"} for day, value in pairs]}})
+
+    def test_history_ahead_preserves_trend_without_appending(self):
+        history = self.history(("2024-01-03", "1.02"), ("2024-01-02", "1.01"),
+                               ("2024-01-01", "1.0"))
+        result = FundFetcher(opener=opener_for(history=history)).fetch(CODE)
+        self.assertEqual([p.unit_nav for p in result.navs], [1.0, 1.01])
+        self.assertEqual(result.navs[-1].nav_date, date(2024, 1, 2))
+        warnings = " ".join(result.warnings)
+        for text in ["更新滞后", "2024-01-03", "2024-01-02", "非独立数据源", "未拼接"]:
+            self.assertIn(text, warnings)
+
+    def test_later_observation_cadence_is_synthetic_not_original_run_replay(self):
+        from datetime import datetime, timedelta, timezone
+        # Nov 6/9 values mirror the later observation; the shared Nov 6 history
+        # row is synthetic because that response was not retained in Run11.
+        days = [date(2026, 11, 5), date(2026, 11, 6)]
+        stamps = [int(datetime.combine(d, datetime.min.time(),
+                  tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000) for d in days]
+        script = SCRIPT.replace("1704038400000", str(stamps[0])).replace(
+            "1704124800000", str(stamps[1])).replace('"y":1.01', '"y":2.108')
+        result = FundFetcher(opener=opener_for(script=script, history=self.history(
+            ("2026-11-09", "2.123"), ("2026-11-06", "2.108")))).fetch(CODE)
+        self.assertEqual(result.navs[-1].nav_date, days[-1])
+        self.assertEqual(result.navs[-1].unit_nav, 2.108)
+        self.assertEqual(len(result.navs), 2)
+
+    def test_history_behind_checks_common_date_and_marks_unconfirmed_tail(self):
+        result = FundFetcher(opener=opener_for(history=self.history(
+            ("2024-01-01", "1.0")))).fetch(CODE)
+        self.assertEqual(result.navs[-1].nav_date, date(2024, 1, 2))
+        self.assertTrue(any("未获同日交叉核对" in w for w in result.warnings))
+
+    def test_same_day_mismatch_always_blocks_including_older_overlap(self):
+        for pairs in [(("2024-01-03", "1.02"), ("2024-01-02", "9")),
+                      (("2024-01-01", "9"),),
+                      (("2024-01-02", "1.01"), ("2024-01-01", "9"))]:
+            with self.subTest(pairs=pairs), self.assertRaisesRegex(FundDataError, "disagree on"):
+                FundFetcher(opener=opener_for(history=self.history(*pairs))).fetch(CODE)
+
+    def test_row_order_does_not_determine_latest_or_common_date(self):
+        history = self.history(("2024-01-01", "1"), ("2024-01-03", "1.02"),
+                               ("2024-01-02", "1.01"))
+        result = FundFetcher(opener=opener_for(history=history)).fetch(CODE)
+        self.assertTrue(any("最近共同日期 2024-01-02" in w for w in result.warnings))
+
+    def test_no_overlap_fails_closed_without_unbounded_page_search(self):
+        for pairs in [(("2024-01-03", "1.02"),), (("2023-12-29", "0.99"),)]:
+            with self.subTest(pairs=pairs), self.assertRaisesRegex(FundDataError, "no overlapping"):
+                FundFetcher(opener=opener_for(history=self.history(*pairs))).fetch(CODE)
+
+    def test_future_and_duplicate_history_dates_fail_closed(self):
+        for pairs, message in [((("2099-01-01", "1"),), "future"),
+                               ((("2024-01-02", "1.01"), ("2024-01-02", "1.01")), "Duplicate"),
+                               ((("2024-01-02", "1.01"), ("2024-01-02", "9")), "Duplicate")]:
+            with self.subTest(pairs=pairs), self.assertRaisesRegex(FundDataError, message):
+                FundFetcher(opener=opener_for(history=self.history(*pairs))).fetch(CODE)
+
+    def test_missing_invalid_and_oversized_history_never_claim_confirmation(self):
+        for history in ["null", "[]", "{}", '{"ErrCode":0,"Data":null}',
+                        self.history(), self.history(("not-a-date", "1")),
+                        self.history(("2024-01-02", "NaN")),
+                        self.history(*[("2024-01-02", "1.01")] * 31)]:
+            with self.subTest(history=history):
+                result = FundFetcher(opener=opener_for(history=history)).fetch(CODE)
+                self.assertTrue(any("交叉核对不可用" in w for w in result.warnings))
+                self.assertFalse(any("已按相同日期核对" in w for w in result.warnings))
+
+    def test_malformed_row_cannot_hide_valid_same_day_mismatch(self):
+        for pairs in [(("bad", "1"), ("2024-01-02", "9")),
+                      (("2024-01-02", "9"), ("bad", "1"))]:
+            with self.subTest(pairs=pairs), self.assertRaisesRegex(FundDataError, "disagree"):
+                FundFetcher(opener=opener_for(history=self.history(*pairs))).fetch(CODE)
+
+    def test_single_history_page_uses_existing_timeout_and_historical_cutoff_skips_it(self):
+        for as_of in [None, date(2024, 1, 1)]:
+            calls = []
+            delegate = opener_for()
+
+            def opener(request, timeout):
+                calls.append((request.full_url, timeout))
+                return delegate(request, timeout)
+
+            FundFetcher(timeout=2, retries=0, opener=opener).fetch(CODE, as_of)
+            history_calls = [(url, timeout) for url, timeout in calls if "lsjz?" in url]
+            self.assertEqual(len(history_calls), 1 if as_of is None else 0)
+            if history_calls:
+                self.assertIn("pageIndex=1&pageSize=30", history_calls[0][0])
+                self.assertEqual(history_calls[0][1], 2)

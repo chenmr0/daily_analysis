@@ -28,7 +28,7 @@ FILTER_REASONS = ("invalid_title", "invalid_url", "identity_mismatch", "not_anno
                   "static_page", "third_party_product", "no_event_signal", "duplicate_url", "selection_limit")
 REASON_LABELS = {
     "invalid_title": "标题不可用", "invalid_url": "链接不可用", "identity_mismatch": "身份或关联不匹配",
-    "not_announcement": "无公告标题语境", "static_page": "静态行情或资料页",
+    "not_announcement": "无公告标题语境", "static_page": "静态行情、资料或导航页",
     "third_party_product": "其他产品持仓提及", "no_event_signal": "缺少事件内容",
     "duplicate_url": "重复链接", "selection_limit": "条数上限未保留",
     "fund_event": "基金事件线索", "related_event": "关联对象事件线索",
@@ -55,7 +55,18 @@ _PRODUCT_CONTEXT = re.compile(r"ETF|基金|\bfund\b", re.I)
 _PORTFOLIO_CONTEXT = re.compile(r"重仓|持仓|成[分份]股|投资组合|\b(?:holdings?|portfolio|constituents?)\b", re.I)
 _STATIC_TITLE = re.compile(
     r"股票股价|股价行情|行情走势|实时行情|历史行情|净值估值|历史净值|净值走势|"
-    r"基金档案|基金概况|基金资料|基本资料|基本信息|\b(?:stock quote|fund profile)\b", re.I,
+    r"基金档案|基金概况|基金资料|基本资料|基本信息|股吧|股票论坛|讨论区|"
+    r"\b(?:stock quote|fund profile|stock forum|message board)\b", re.I,
+)
+# Explicit access instructions remain navigation even when the subject includes
+# event words (e.g. 上市/公告/发布). Bare forum labels remain a soft signal so
+# syndicated event articles with a 股吧 source suffix can still be retained.
+_NAVIGATION_RESOURCE = r"(?:股吧|股票论坛|讨论区|讨论|行情|股价|公告|财报|净值|基金资料)"
+_NAVIGATION_TITLE = re.compile(
+    _NAVIGATION_RESOURCE + r"[^，,。；;：:！？!?|]{0,10}(?:在哪|在哪里|哪里看|哪里查|怎么看|怎么查|如何查看|如何查询|入口|网址|导航)|"
+    r"(?:在哪|在哪里|哪里|如何|怎么).{0,8}(?:查看|查询|查阅|找到|进入).{0,16}" + _NAVIGATION_RESOURCE + r"|"
+    r"(?:\bwhere to (?:find|view|check)\b.{0,40}\b(?:quotes?|filings?|earnings|stock forums?)\b)|"
+    r"\b(?:stock forum|message board|stock quote)\s+(?:directory|login|portal)\b", re.I,
 )
 _EVENT_ACTION = re.compile(
     r"发布|公布|披露|宣布|召开|推出|中标|签订|获批|获准|处罚|诉讼|回购|收购|并购|"
@@ -227,6 +238,11 @@ def _static_page(title: str, url: str) -> bool:
     if host == "quote.eastmoney.com" or host.endswith(".quote.eastmoney.com"):
         return True
     if host == "finance.sina.com.cn" and re.fullmatch(r"/realstock/company/[^/]+/nc.shtml", path):
+        return True
+    if ((host == "guba.eastmoney.com" or host.endswith(".guba.eastmoney.com"))
+            and re.fullmatch(r"/list,[A-Za-z0-9]+(?:_[0-9]+)?\.html", path, re.I)):
+        return True
+    if _NAVIGATION_TITLE.search(unicodedata.normalize("NFKC", title)):
         return True
     return bool(_STATIC_TITLE.search(title) and not (_EVENT_ACTION.search(title) or _SPECIFIC_EVENT.search(title)))
 
@@ -450,7 +466,8 @@ def select_news_digest(bundle, *, max_items: int = 3) -> dict:
         scope = _news_value(item, "evidence_scope")
         if (_news_value(item, "date_status") != "fresh" or _news_value(item, "model_eligible") is not True
                 or scope not in {"fund_event", "related_event", "sector_context"} or published is None
-                or not _plain(_news_value(item, "title")) or not _safe_url(_news_value(item, "url"))):
+                or not _plain(_news_value(item, "title")) or not _safe_url(_news_value(item, "url"))
+                or _static_page(_plain(_news_value(item, "title")), _safe_url(_news_value(item, "url")))):
             counts["ineligible"] += 1
             continue
         key, name, code, relationship = _digest_entity(item, assets)

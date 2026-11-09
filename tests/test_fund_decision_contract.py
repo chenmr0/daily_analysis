@@ -35,7 +35,10 @@ def test_decision_is_additive_and_enum_owned(direction):
     assert statuses["000001"].status == "ok"
     assert funds["000001"].decision.direction == direction
     assert funds["000001"].decision.conditions.evidence_ids == ["F000001:holdings"]
-    assert parse(valid_output())[0]["000001"].decision is None
+    legacy = valid_output()
+    legacy["funds"][0].pop("decision")
+    legacy["funds"][0].pop("news_assessment")
+    assert parse(legacy)[0]["000001"].decision is None
 
 
 @pytest.mark.parametrize("refs", [["F000001:return_1m"], ["F000001:holdings"],
@@ -83,6 +86,7 @@ def news_bundle(**changes):
 
 def impact_output():
     output = decision_output()
+    output["funds"][0]["news_assessment"] = {"status": "conditional_impacts", "explanation": None}
     output["funds"][0]["news_impacts"] = [{
         "news_evidence_id": "F000001:news:0", "relationship_evidence_id": "F000001:holdings",
         "transmission": statement("若待核验线索得到确认，可能改变相关企业经营预期，需核验历史股票持仓资料。",

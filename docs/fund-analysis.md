@@ -9,20 +9,22 @@
 - 月份算法不变：以最新净值日的日历月锚点为准，取锚点当日或之前且不超7自然日容差的净值。主展示用真实起止日期和天数，而非假称精确30天。同属标题年份的区间简写MM-DD，跨年或非标题年份区间保留完整年份；JSON日期完整保留。例如2026-09-30至2026-11-06是37天；QDII截至11月5日则是36天。其他月份标签加“约”，模型程序事实标签同步调整。
 - 最大回撤就近标注“历史峰谷，非当前回撤”。分红/拆分、历史不足、缺失日期或其他失败原因继续显示N/A，不用AI失败代替数据失败；带失败原因的Metric即使有数值也不用于摘要观察。
 - 持仓只概括所列报告期股票明细的合计、两项较大披露及一项主要历史行业，完整列表保留JSON。联接基金的直接股票明细不等于目标ETF底层持仓；未知关系日期不补造。收益数据不推断当前持仓，也不作跨币种金额换算。
-- 新闻摘要最多两个条目，复用既有合格条件，只采用fresh、model_eligible且非宽泛背景的线索。同主体同日相近标题可合并，优先不同关联对象，再按额度保留明确不同的重要事件；不同金额或明确更新不合并。原始检索结果、资格、coverage和reason_counts不改。摘要按本基金、目标ETF、历史股票、行业背景优先，保留item_index/source_indices，普通news事实保留原始编号，结构化影响只绑定与报告相同的两个规范摘要标题；此顺序仅表示关联直接程度，不证明事件重大或利好利空。完整来源仍在news_evidence；晚于净值日的新闻就近标注为后续线索，不能解释先前已记录净值变化。
+- 新闻摘要最多两个条目，源筛选、已存摘要重放及模型上下文均排除股吧/行情/资料入口导航，不因标题含“上市”等词就认定事件；真实事件报道不按域名一刀切。复用既有合格条件，只采用fresh、model_eligible且非宽泛背景的线索。同主体同日相近标题可合并，优先不同关联对象，再按额度保留明确不同的重要事件；不同金额或明确更新不合并。原始检索结果、资格、coverage和reason_counts不改。摘要按本基金、目标ETF、历史股票、行业背景优先，保留item_index/source_indices，普通news事实保留原始编号，结构化影响只绑定与报告相同的两个规范摘要标题；此顺序仅表示关联直接程度，不证明事件重大或利好利空。完整来源仍在news_evidence；晚于净值日的新闻就近标注为后续线索，不能解释先前已记录净值变化。
 - 整批AI超时只显示一次；部分成功时显示已接受的重点观点、证据链接、实际模型和逐基金状态，全部章节保存在JSON，未通过观点不展示。技术诊断留在JSON与日志，不在邮件重复打印。数据获取失败仍单列并保留其他基金。
 
 JSON维持**schema 4**和既有字段。兼容字段`action_references`仍在AI前由程序生成和冻结，但不再在邮件/Markdown渲染。它的`conditional / observe`与`unavailable / undetermined`契约未改，不是交易策略，也不反向控制本次摘要。`analyses`、`failed_codes`、`news`、`news_evidence`、逐基金/横向AI状态及`notification`继续完整保存。没有新增配置、Web/API消费端、股票行为、定时或通知路由；同一Markdown仍交给既有邮件纯文本与HTML发送流程。
 
 ## 条件式研究判断与新闻影响
 
-`FundInsight`新增可选`decision`和`news_impacts`，不改股票流程或通知次数。新prompt要求每只基金给判断；旧模型JSON允许缺省，不能把缺省转为“观望”。
+`FundInsight`保留旧快照兼容字段；实时模型输出必须提供`decision`、`news_impacts`及`news_assessment`，不能静默省略判断或新闻分析。仅显式旧版解析允许缺省，不把缺省转为“观望”。不改股票流程或通知次数。
 
-- `decision`恰含`direction`、`rationale`、`conditions`、`invalidation`。方向只允许`consider_buy`（有条件新增）、`consider_reduce`（若已持有时研究减仓）、`watch`、`undetermined`；其余为原有`text/evidence_ids`对象。程序只渲染这些枚举，不由净值涨跌规则选择方向。
-- 有操作倾向的理由必须同时引用通过原始指标检查的本基金metric和有报告期的股票/行业资料或来源绑定目标ETF关系。指标的数值、失败原因、实际起止日期和取值范围均再检查。这只是最低证据门槛，不证明方向正确、个人适合或策略经过回测。
+- `decision`恰含`direction`、`basis`、`rationale`、`conditions`、`invalidation`。`basis=information_gap`必须对应`undetermined`，其余方向对应`investment_case`。方向只允许`consider_buy`（有条件新增）、`consider_reduce`（若已持有时研究减仓）、`watch`、`undetermined`；其余为原有`text/evidence_ids`对象。程序只渲染这些枚举，不由净值涨跌规则选择方向。
+- 买入候选、减仓候选及观望的理由必须同时引用通过原始指标检查的本基金metric和有报告期的股票/行业资料或来源绑定目标ETF关系。指标的数值、失败原因、实际起止日期和取值范围均再检查。这只是最低证据门槛，不证明方向正确、个人适合或策略经过回测。
 - 不能假设用户持有、成本、风险能力或交易期限。条件必须说明需要核验的具体事实，不能仅重复通用免责声明。自由文字的编造数值、交易命令、收益预测、保证、当前持仓、排名和确定性因果禁令不松绑；操作方向仅由独立枚举表达。直接对接收者作断言（你/您/用户等）及没有条件或核验语境的个人资金/经验/风险能力陈述被拒；中性核验条件允许，这仍是有限词法检查。
+- 观望不能仅用资料身份或页面口径待核对作理由。实时校验要求条件与理由、失效条件文字不同，并引用适用的历史资料/目标关系/QDII边界/新闻；条件还须点明有相应资料支持的有限观察变量：回购/注销/申赎/费率/限购/经理变化、订单/营收/盈利/利润/现金流/业绩、QDII汇率/估值时点/海外假期。纯“核验原始页面”不通过，应改为无法判断。此有限词法与引用门槛仍不证明模型论证成立，也可能拒绝未覆盖的合理条件。
 - 有新判断时，邮件不重复展开旧conclusion/evidence/observations；这些章节完整保留JSON。依据以可读的“历史持仓/净值区间”等日期链接显示，不露出程序事实ID。
 - `news_impacts`最多三项，恰含`news_evidence_id`、`relationship_evidence_id`、`transmission`。新闻须通过时效和资格筛选，关联须按主体、类别、日期和来源重新绑定到同基金输入；不能拿任意同基金资料背书。历史关联报告期不能晚于新闻日期。
+- `news_assessment`必须明确`conditional_impacts`（有条件假设）、`insufficient_evidence`（证据不足）或`no_eligible_news`（本次无可分析关联线索）。有绑定线索时不能静默返回空影响；未分析的每条规范标题必须被缺证说明引用。无合格线索时不允许编造影响，报告说明本次检索边界并保留失败/未配置/预算耗尽原因，不宣称没有重大新闻。旧版缺此字段时明确显示未提供影响分析。
 - `transmission`只引用该新闻及绑定关系，以“若…可能…”写传导假设，不预测基金净值方向。程序固定`verification=unverified_lead`、`magnitude=unknown`，模型不能自行改成已证实。标题并非原文核验，历史名单不证明当前持有，未找到新闻不代表没有事件。
 - 本轮不增加网页正文获取、基准/估值/资金流/个人组合接口。没有这些数据时，应明确缺证而非编造“重大新闻”或盈利催化。通用语言守门仍可能误拒合法说法，也不能证明每项自由推理成立；实际模型质量、时延、成本需单独在线验证。
 
@@ -82,7 +84,7 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 均为东方财富/天天基金公开接口转述的已披露数据，未独立核对管理人原始公告：
 
 1. `fund.eastmoney.com/pingzhongdata/{code}.js`：基金代码/名称、单位净值、累计净值、日增长率、分红/拆分标记、经理。
-2. `api.fund.eastmoney.com/f10/lsjz`：核对最新净值日期及数值。与第一项同源，不是独立双源容灾。不一致阻止该基金分析；该接口不可用时明确提示仅有单端点数据。
+2. `api.fund.eastmoney.com/f10/lsjz`：单次读取最多30条历史记录，与走势序列逐个相同日期核对单位净值；任何共同日期差异、重复/未来日期或有效序列无共同日期均阻止该基金分析。最新日期不同不等于数值冲突：保留原走势序列，提示两端最新日期和最近共同日期，不拼接历史接口尾部；共同日期之后的值未获同日核对。请求数不增加，沿用超时/重试上限。接口不可用或格式无效时明确提示单端点数据，但已读到的有效同日冲突不会被其他坏行掩盖。与第一项同源，不是独立复核或双源容灾。
 3. `fundf10.eastmoney.com/jbgk_{code}.html`：类型、成立日期等当前资料。标题校验基金全名及代码；请求失败、身份校验失败或类型/成立日期/经理缺失时，至多增加一个同源备用页面 `fund.eastmoney.com/{code}.html`，先校验身份，再限定解析基金资料表。保留主来源错误类别/HTTP状态和实际采用的来源链接；备用也失败就保留已有可信字段并标明缺失，不用旧资料补值。币种未核验时不猜测。
 4. `FundArchivesDatas.aspx?type=jjcc`：最近披露股票明细及报告期末。缺数据不等于零持仓；报告期末不等于公告日，真实公告日期缺失时保留未知。
 5. 基金首页标题区域“查看相关ETF”链接：仅ETF联接产品读取，再访问目标页核验代码/名称/ETF类型。核验的是目标身份，不是配置比例或底层穿透，关系披露时间缺失保持未知。
@@ -127,7 +129,7 @@ JSON新闻追加 `evidence_scope` 和 `model_eligible`：`fund_event` 是本基�
 
 通过现有 `GeminiAnalyzer.generate_text_with_metadata` 公共接口复用云端LiteLLM模型及配置的云端回退，不是给规则模板改名。虽然接口类名含Gemini，实际可配置OpenAI、Gemini、Anthropic等，报告显示实际返回模型/供应方/后端，不冒称GPT。需要GPT时使用项目现有OpenAI云端配置，不增加基金专用新密钥。
 
-一批基金一次请求，生成每只核心结论、风险、证据、后续观察及横向观察。程序先计算事实，模型以事实ID占位引用数字、日期、代码，另行撰写中文定性解释。引用、结构、基金归属、数量词、方向和当前持仓等经过保守检查。响应解析、全局结构与基金身份不完整或不一致时仍整批拒绝；通过全局检查后，每只基金独立校验，单只失败只弃用该基金全部AI章节，其余有效观点保留。横向观察独立全有或全无，任何横向语句失败会弃用全部横向观察，不丢弃已通过的单基金观点；引用已拒绝基金的事实（包括包含该基金的比较事实）也会拒绝。确定性数据始终保留。自然语言检查不是事实证明，仍可能遗漏量化/时态错误，也可能拒绝合理文字；报告明确标记AI观点，关键判断应回查原始证据。
+一批基金先进行一次请求，生成每只核心结论、风险、证据、后续观察及横向观察。程序先计算事实，模型以事实ID占位引用数字、日期、代码，另行撰写中文定性解释。引用、结构、基金归属、数量词、方向和当前持仓等经过保守检查。响应解析、全局结构与基金身份不完整或不一致时仍整批拒绝；通过全局检查后，每只基金独立校验，单只失败只弃用该基金全部AI章节，其余有效观点保留。横向观察独立全有或全无，任何横向语句失败会弃用全部横向观察，不丢弃已通过的单基金观点；引用已拒绝基金的事实（包括包含该基金的比较事实）也会拒绝。确定性数据始终保留。自然语言检查不是事实证明，仍可能遗漏量化/时态错误，也可能拒绝合理文字；报告明确标记AI观点，关键判断应回查原始证据。
 
 ### 缺失证据与限制措辞契约
 
@@ -180,7 +182,7 @@ Run9 的001672与025500只保留 `evidence[0]` 的 `historical_evidence_missing`
 
 仅凭HTTP成功不代表解读通过。此前只保留统一校验错误的报告不能回溯具体子校验原因；新诊断只适用于应用补丁后的运行。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
 
-最多二十只基金、提示词一百五十KB、输出四十八KB、输出token上限六千。默认模型阶段总等待一百二十秒（包含分析器初始化），SDK请求超时最多九十秒，并扣除初始化已耗时间、预留三十秒处理余量；缩短程序调用的 `timeout_seconds` 时，余量同步缩为其四分之一。基金仅尝试首个配置模型，关闭应用层参数恢复、模型/后端回退，并向LiteLLM Router/SDK传入零重试参数；股票默认策略不变，仍支持原有云端提供商。单进程只有一个未结束请求。上述时间不是端到端硬截止，零重试参数也不是单次HTTP保证：SDK超时可能按网络阶段计时，提供商适配器内部兼容修复、LiteLLM全局设置或已有客户端可能另行重发。Python线程无法硬取消在途请求，服务端仍可能继续处理并产生费用；迟到结果不采用，也不补发报告或邮件。
+最多二十只基金、每次提示词一百五十KB、输出四十八KB；首次输出token上限六千。默认模型阶段总等待一百二十秒（包含分析器初始化），SDK请求超时最多九十秒，并扣除初始化已耗时间、预留三十秒处理余量；缩短程序调用的 `timeout_seconds` 时，余量同步缩为其四分之一。基金仅尝试首个配置模型，关闭应用层参数恢复、模型/后端回退，并向LiteLLM Router/SDK传入零重试参数；股票默认策略不变，仍支持原有云端提供商。单进程只有一个未结束请求。上述时间不是端到端硬截止，零重试参数也不是单次HTTP保证：SDK超时可能按网络阶段计时，提供商适配器内部兼容修复、LiteLLM全局设置或已有客户端可能另行重发。Python线程无法硬取消在途请求，服务端仍可能继续处理并产生费用；迟到结果不采用，也不补发报告或邮件。
 
 ## 已知范围限制
 
@@ -234,4 +236,23 @@ The email now starts with per-fund cards after one AI status line, without gener
 
 ### Conditional research contract (English)
 
-Optional decision and news_impacts extend FundInsight within schema 4. Directions are closed enums, not personal trading instructions. Actionable opinions require a revalidated same-fund metric plus substantive dated holdings/allocation or target-ETF relationship evidence; this necessary gate does not validate investment suitability or strategy effectiveness. Existing prose guards remain unchanged. News hypotheses must bind an eligible title to its exact source relationship and cannot assert a verified event, current exposure, causal NAV attribution or predicted return. No new online source, credentials, workflow, configuration or notification path is introduced. Offline examples use explicitly hand-authored fake model responses, never real AI outputs.
+Legacy snapshots remain readable within schema 4. Live responses now require decision (including basis), news_impacts, and news_assessment. Information gaps map only to undetermined. Every bound digest headline needs a conditional impact or a cited explanation of missing evidence; no eligible headline never means no important news. Watch opinions require a limited source-bound observable variable, not just page verification; these lexical/citation gates are necessary, not semantic proof. NAV reconciliation compares all dates shared with one bounded 30-row history page. Date-lag warnings preserve the trend series without splicing, while same-day discrepancies fail closed. Navigation/forum-index filtering applies to new and saved evidence. Directions are closed enums, not personal trading instructions. Actionable opinions require a revalidated same-fund metric plus substantive dated holdings/allocation or target-ETF relationship evidence; this necessary gate does not validate investment suitability or strategy effectiveness. Existing prose guards remain unchanged. News hypotheses must bind an eligible title to its exact source relationship and cannot assert a verified event, current exposure, causal NAV attribution or predicted return. No new online source, credentials, workflow, configuration or notification path is introduced. Offline examples use explicitly hand-authored fake model responses, never real AI outputs.
+
+### Run11 regression provenance
+
+The offline fixture retains public input facts from Run11, projected to the latest NAV plus recorded metrics, not a replacement NAV history. Its example responses are explicitly hand-authored and do not recover missing original model text. The later 001672 endpoint observation (trend 2026-11-06 2.108; history 2026-11-09 2.123) motivates the asynchronous-date regression, whose common-date rows are synthetic. No new online NAV/news verification, real model generation, Actions run or email was performed for these fixes.
+
+### 一次限定内容修正
+
+- 首次响应通过全局结构及基金身份校验后，仅把带本基金安全诊断的schema/citation/narrative失败基金合成一次修正请求。已通过基金不重算，最多两次应用层生成调用，不是每只失败基金各开一次请求。
+- 修正反馈只包含白名单错误类别、章节、历史主题等程序枚举，以及原有同基金事实快照；不回传被拒模型原文、未知引用ID、匹配原词、异常内容或密钥。完整初始基金身份仅供本地守门，防止修正文借另只基金名称背书，不加入修正提示词。
+- 输入/配置错误、模型调用失败/超时、空响应、无效JSON、顶层/基金身份错误和仅横向比较失败不触发修正。首次失败请求若仍在途，不追加调用。没有新增数据查询或新闻搜索。
+- 总等待仍用原120秒截止，修正SDK及调用等待最多30秒，预留5秒收尾；可用时间不足10秒就跳过。修正输出token上限为min(6000,1200×失败基金数)，仍关闭SDK重试与模型/后端回退。这是输出请求上限，不是美元费用保证；输入也计费，服务端在途处理局限不变。
+- 修正响应仍走全部事实、引用、措辞和新闻完整性校验。再次失败即保留失败状态，不第三次调用。首轮合法基金和合法横向观察对象不修改；修正必须comparison为空，不生成新横向比较，也不恢复首轮已经丢弃的比较。
+- `InterpretationScopeStatus`追加`repair_status`、`repair_diagnostics`；原`diagnostics`保留首次原因。修正状态区分成功、未取得结果、预算不足或忙碌跳过。`repair_model/repair_provider`记录实际修正调用身份，可不同于首次路由身份。输出边界再次按白名单清洗诊断，报告显示简短状态，不显示原始失败句。
+- 报告与邮件在这次合并之后生成，仍只尝试发送一次；修正失败不补发。Actions退出状态仍由净值数据/通知失败决定，AI部分失败不会单独改为非零退出。
+
+
+### Bounded content repair (English)
+
+After a globally valid first response, one extra batch may regenerate only fund-scoped schema/citation/narrative failures. Successful insights and accepted comparisons are immutable. Safe category feedback and the same failed-fund evidence are supplied; rejected prose, unknown IDs and exception details are not. Global JSON/identity, provider/timeout and comparison-only failures do not retry. Repair uses the original 120-second deadline, at most 30 seconds with a five-second reserve and a ten-second minimum remaining budget, plus min(6000,1200 × failed funds) output tokens. SDK/application fallback remains disabled. Repair comparison must be empty; discarded comparisons never reappear. Per-scope repair metadata preserves the initial diagnostic and actual routed repair identity. The report is finalized before one notification attempt; no additional send is introduced. These limits bound application requests and output allocation, not exact billing or hard cancellation of provider work.

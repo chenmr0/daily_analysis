@@ -743,3 +743,88 @@ def test_run10_digest_news_is_historical_background_not_confirmed_fund_events():
     assert all(g['verification_status'] == 'headline_only_unverified' for g in selected)
     assert all(g['impact_status'] == 'unknown' for g in selected)
     assert all(g['relationship']['source_date'] == '2026-09-30' for g in selected)
+
+
+# Exact Run11 title and URL from news-source-review.json; the remaining cases
+# are synthetic counterexamples, not claims that their events occurred.
+_RUN11_NAV_TITLE = "壁仞科技股吧在哪？2026年港股上市行情与投资者讨论入口 ..."
+_RUN11_NAV_URL = "https://kuku.baidu.com/landing/tscp_doc/b7417accc35f61494dc6ca2250f311ae"
+
+
+@pytest.mark.parametrize("title,url", [
+    (_RUN11_NAV_TITLE, _RUN11_NAV_URL),
+    ("壁仞科技上市公告在哪里看？", "https://news.example.com/guide"),
+    ("如何查询壁仞科技股票上市行情", "https://news.example.com/guide"),
+    ("壁仞科技股吧：上市资料与讨论区", "https://news.example.com/forum"),
+    ("壁仞科技发布财报：股票论坛入口导航", "https://news.example.com/portal"),
+    ("壁仞科技公布回购计划", "https://guba.eastmoney.com/list,06082.html"),
+    ("壁仞科技 stock forum directory：上市资料", "https://news.example.com/directory"),
+])
+def test_navigation_cannot_become_event_from_fresh_date_or_snippet(title, url):
+    bundle = gather_fund_news(holding_data("06082", "壁仞科技"), search(item(
+        title, url, snippet="壁仞科技发布财报并宣布股票回购")), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["holding"].status == "none_filtered"
+    assert bundle.coverage["holding"].reason_counts == {"static_page": 1}
+    assert bundle.coverage["holding"].fresh == 0
+
+
+@pytest.mark.parametrize("title,url", [
+    ("壁仞科技公布上市计划", _RUN11_NAV_URL),
+    ("壁仞科技发布季度财报_壁仞科技股吧", "https://guba.eastmoney.com/news,06082,123456.html"),
+    ("壁仞科技股价上涨5%，投资者讨论业绩增长", "https://news.example.com/event"),
+    ("壁仞科技公告：投资者关系网站入口变更", "https://news.example.com/notice"),
+    ("壁仞科技股票停牌公告", "https://kuku.baidu.com/landing/other"),
+])
+def test_navigation_filter_preserves_event_articles_without_domain_bans(title, url):
+    bundle = gather_fund_news(holding_data("06082", "壁仞科技"), search(item(title, url)), as_of=TODAY)
+    assert len(bundle.items) == 1
+    assert bundle.items[0].model_eligible is True
+    digest = select_news_digest(bundle)
+    assert digest["items"][0]["verification_status"] == "headline_only_unverified"
+    assert digest["items"][0]["impact_status"] == "unknown"
+
+
+@pytest.mark.parametrize("title", [
+    "测试基金C公告在哪里看", "测试基金C净值查询入口与分红公告",
+    "测试基金C如何查看财报公告",
+])
+def test_direct_fund_navigation_is_also_filtered(title):
+    bundle = gather_fund_news(sample(), search(item(title)), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["announcement"].reason_counts == {"static_page": 1}
+    assert bundle.coverage["direct_fund"].reason_counts == {"static_page": 1}
+
+
+@pytest.mark.parametrize("saved_json", [False, True])
+def test_old_navigation_records_cannot_reenter_digest_and_remain_auditable(saved_json):
+    bundle = digest_bundle(_RUN11_NAV_TITLE, "壁仞科技公布回购计划", name="壁仞科技", code="06082")
+    bundle.items[0].url = _RUN11_NAV_URL
+    if saved_json:
+        bundle = json.loads(json.dumps(asdict(bundle), default=str, ensure_ascii=False))
+    original = deepcopy(bundle)
+    digest = select_news_digest(bundle)
+    assert digest["counts"]["ineligible"] == 1
+    assert digest["counts"]["selected"] == 1
+    assert digest["items"][0]["item_index"] == 1
+    assert digest["items"][0]["source_indices"] == [1]
+    assert bundle == original
+    assert_digest_counts(digest)
+
+
+@pytest.mark.parametrize("name,code,title,url", [
+    ("中微公司", "688012", "中微公司(688012):以集中竞价交易方式首次回购公司股份",
+     "https://www.cfi.net.cn/p20261109002084.html"),
+    ("兆易创新", "603986", "兆易创新回购 11.65 亿，股份将全部注销|兆易创新|财联社|回购_新浪新闻",
+     "https://www.sina.cn/news/detail/5362438211896744.html"),
+    ("三环集团", "300408", "三环集团取得不超8.1亿元金融机构股票回购贷款承诺_公司新闻_财经_证券之星",
+     "https://wap.stockstar.com/detail/IG2026110600039256"),
+])
+def test_run11_concrete_title_leads_survive_without_claiming_body_verification(name, code, title, url):
+    # Saved Run11 metadata, not a fresh request or independent event/date check.
+    bundle = gather_fund_news(holding_data(code, name), search(item(title, url)), as_of=TODAY)
+    assert bundle.items[0].title == title
+    selected = select_news_digest(bundle)["items"][0]
+    assert selected["verification_status"] == "headline_only_unverified"
+    assert selected["impact_status"] == "unknown"
+    assert selected["reporting_context"] == "historical_holding"

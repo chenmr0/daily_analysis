@@ -7,6 +7,7 @@ import pytest
 
 from src.core.fund_analysis import FundData, FundProfile, NavPoint
 from src.services.fund_analysis_service import run_fund_analysis
+from tests.test_fund_interpretation import valid_output
 
 
 def sample(code="001672", name="示例基金A"):
@@ -288,7 +289,8 @@ def test_real_interpretation_adapter_resolves_program_facts_in_report(tmp_path):
     fetcher = Mock()
     fetcher.fetch.return_value = sample()
     statement = {"text": "已披露资料可用于观察历史情况：{{F001672:nav}}", "evidence_ids": ["F001672:nav"]}
-    payload = {"funds": [{"fund_code": "001672", **{key: [statement] for key in ("conclusion", "risks", "evidence", "observations")}}], "comparison": []}
+    payload = valid_output(("001672",))
+    payload["funds"][0].update({key: [statement] for key in ("conclusion", "risks", "evidence", "observations")})
     analyzer = Mock()
     analyzer.get_generation_backend_identity.return_value = ("litellm", "openai/test")
     analyzer.is_available.return_value = True
@@ -371,7 +373,7 @@ def test_news_report_separates_weak_background_and_sanitizes_filter_counts(tmp_p
     assert item.title not in report.markdown
     assert '以下仅为宽泛背景' in '\n'.join(saved['news']['001672'])
     assert '不作为模型事件证据' in '\n'.join(saved['news']['001672'])
-    assert '静态行情或资料页 1条' in '\n'.join(saved['news']['001672'])
+    assert '静态行情、资料或导航页 1条' in '\n'.join(saved['news']['001672'])
     assert item.title not in report.markdown
     assert saved['news_evidence']['001672']['items'][0]['model_eligible'] is False
     assert saved['news_evidence']['001672']['coverage']['industry']['reason_counts'] == {'static_page': 1, 'weak_background': 1}
@@ -409,7 +411,8 @@ def test_provider_response_validation_diagnostic_reaches_final_report_without_ra
     assert 'PRIVATE_UNKNOWN_CITATION' not in saved_text + report.markdown + caplog.text
     assert '1.100000' in report.markdown
     assert report.notification_status == 'disabled'
-    analyzer.generate_text_with_metadata.assert_called_once()
+    assert analyzer.generate_text_with_metadata.call_count == 2
+    assert saved['interpretation']['fund_statuses']['001672']['repair_status'] == 'failed'
 
 
 @pytest.mark.parametrize('reject_fund', [True, False])
@@ -424,8 +427,9 @@ def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(t
     for code in codes:
         statement = {'text': '已披露资料可用于观察历史情况：{{F' + code + ':nav}}',
                      'evidence_ids': [f'F{code}:nav']}
-        funds.append({'fund_code': code, **{key: [statement] for key in
-                                          ('conclusion', 'risks', 'evidence', 'observations')}})
+        fund = valid_output((code,))['funds'][0]
+        fund.update({key: [statement] for key in ('conclusion', 'risks', 'evidence', 'observations')})
+        funds.append(fund)
     if reject_fund:
         funds[1]['conclusion'] = [{'text': '应拒绝的原始模型文字。', 'evidence_ids': ['PRIVATE_UNKNOWN_ID']}]
     payload = {'funds': funds, 'comparison': [
@@ -453,13 +457,13 @@ def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(t
     assert set(interpretation['funds']) == ({'001672'} if reject_fund else set(codes))
     assert len(saved['analyses']) == 2 and not report.failed_codes
     assert report.markdown.count('最新已披露单位净值：1.100000') == 2
-    assert report.markdown.count('### AI基金解读（推理观点，非事实认证）') == (1 if reject_fund else 2)
+    assert report.markdown.count('**操作倾向：无法判断**') == (1 if reject_fund else 2)
     assert '部分AI解读通过校验' in report.markdown
     assert '未生成可采用的模型结论' not in report.markdown
     assert '横向解读失败' in report.markdown
     for marker in ('应拒绝的原始模型文字', '应拒绝的横向模型文字', 'PRIVATE_UNKNOWN_ID', 'PRIVATE_COMPARISON_ID'):
         assert marker not in report.markdown + saved_text
-    analyzer.generate_text_with_metadata.assert_called_once()
+    assert analyzer.generate_text_with_metadata.call_count == (2 if reject_fund else 1)
     notifier.send_with_results.assert_called_once_with(
         report.markdown, route_type='report', email_subject=f"场外基金已披露净值日报 - {saved['as_of']}",
     )

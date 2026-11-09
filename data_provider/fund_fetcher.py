@@ -387,6 +387,60 @@ class FundFetcher:
             warnings.append(f"目标ETF关系未核验 [{_diagnostic(exc)}]；未根据名称推断或补造映射。")
         return assets
 
+    def _check_nav_consistency(self, code: str, navs: list[NavPoint],
+                               today: date, warnings: list[str]) -> None:
+        # One bounded page, using the existing transport timeout/retry budget.
+        # A different latest date is not a conflicting NAV. Never splice history
+        # rows into the trend series or call same-provider agreement independent.
+        history_url = ("https://api.fund.eastmoney.com/f10/lsjz?"
+                       f"fundCode={code}&pageIndex=1&pageSize=30")
+        unavailable = "历史净值接口交叉核对不可用；净值仅取自同源净值走势，非独立数据源复核。"
+        try:
+            history = json.loads(self._get(history_url))
+            if not isinstance(history, dict) or history.get("ErrCode") != 0:
+                raise FundDataError("Historical NAV source reports an error")
+            rows = history["Data"]["LSJZList"]
+            if not isinstance(rows, list) or not 1 <= len(rows) <= 30:
+                raise FundDataError("Invalid historical NAV page")
+        except (FundDataError, ValueError, KeyError, TypeError):
+            warnings.append(unavailable)
+            return
+        trend = {point.nav_date: point.unit_nav for point in navs}
+        confirmed = {}
+        invalid = False
+        for row in rows:
+            try:
+                if not isinstance(row, dict) or row.get("NAVTYPE") != "1":
+                    raise FundDataError("Unexpected historical NAV type")
+                day = date.fromisoformat(row["FSRQ"])
+                value = _number(row["DWJZ"], positive=True)
+            except (FundDataError, ValueError, KeyError, TypeError):
+                invalid = True
+                continue
+            if day > today:
+                raise FundDataError("Historical NAV date is in the future; analysis blocked")
+            if day in confirmed:
+                raise FundDataError("Duplicate historical NAV date; analysis blocked")
+            confirmed[day] = value
+            if day in trend and abs(value - trend[day]) > 1e-8:
+                raise FundDataError(
+                    f"Published NAV endpoints disagree on {day.isoformat()}; analysis blocked")
+        # Malformed rows cannot hide a valid same-day disagreement above, but
+        # cannot substantiate an agreement or endpoint update-date comparison.
+        if invalid:
+            warnings.append(unavailable)
+            return
+        overlap = trend.keys() & confirmed.keys()
+        if not overlap:
+            raise FundDataError("Published NAV endpoints have no overlapping dates; analysis blocked")
+        common = max(overlap)
+        trend_latest, history_latest = navs[-1].nav_date, max(confirmed)
+        warnings.append(f"同源净值接口已按相同日期核对，最近共同日期 {common}；非独立数据源复核。")
+        if trend_latest != history_latest:
+            warnings.append(
+                f"净值接口更新日期不同，可能存在更新滞后：走势 {trend_latest}，历史 {history_latest}；"
+                f"保留走势净值至 {trend_latest}，未拼接历史接口数据；共同日期之后的净值未获同日交叉核对。")
+
     def fetch(self, code: str, as_of: Optional[date] = None) -> FundData:
         if not isinstance(code, str) or not re.fullmatch(r"\d{6}", code, flags=re.ASCII):
             raise ValueError("Off-exchange fund code must be exactly six ASCII digits")
@@ -416,25 +470,9 @@ class FundFetcher:
             raise FundDataError("Money-market fund NAV convention is unsupported")
         if not profile.fund_type:
             warnings.append("基金类型缺失，无法完整确认产品类别。")
-        # Both endpoints are the same provider: consistency check, not a second
-        # independent source. Disagreement fails closed, never averages values.
         if as_of is None:
-            history_url = ("https://api.fund.eastmoney.com/f10/lsjz?"
-                           f"fundCode={code}&pageIndex=1&pageSize=1")
-            try:
-                history = json.loads(self._get(history_url))
-                if history.get("ErrCode") != 0:
-                    raise FundDataError("Historical NAV source reports an error")
-                latest = history["Data"]["LSJZList"][0]
-                if latest.get("NAVTYPE") != "1":
-                    raise FundDataError("Unexpected historical NAV type")
-                confirmed = (date.fromisoformat(latest["FSRQ"]),
-                             _number(latest["DWJZ"], positive=True))
-            except (FundDataError, ValueError, KeyError, IndexError, TypeError):
-                warnings.append("历史净值接口交叉核对不可用；净值仅取自同源净值走势。")
-            else:
-                if confirmed[0] != navs[-1].nav_date or abs(confirmed[1] - navs[-1].unit_nav) > 1e-8:
-                    raise FundDataError("Published NAV endpoints disagree; analysis blocked")
+            self._check_nav_consistency(code, navs, now.astimezone(
+                timezone(timedelta(hours=8))).date(), warnings)
         else:
             warnings.append("历史截止日只过滤净值；基金概况为当前资料，非历史时点快照。")
         holdings_url = ("https://fundf10.eastmoney.com/FundArchivesDatas.aspx?"

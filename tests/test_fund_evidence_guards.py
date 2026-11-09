@@ -111,8 +111,9 @@ def test_real_retained_accepted_statements_roundtrip_without_claiming_recovered_
     assert result.status == "ok", result.diagnostics
     expanded = asdict(result.funds["018123"])
     assert {key: expanded[key] for key in module._SECTIONS} == retained
-    assert expanded["decision"] is None and expanded["news_impacts"] == []
-    assert set(expanded) == {*module._SECTIONS, "decision", "news_impacts"}
+    # New mandatory fields are synthetic test scaffolding, not recovered output.
+    assert expanded["decision"]["basis"] == "information_gap" and expanded["news_impacts"] == []
+    assert set(expanded) == {*module._SECTIONS, "decision", "news_impacts", "news_assessment"}
 
 
 @pytest.mark.parametrize("section", [*module._SECTIONS, "comparison"])

@@ -138,6 +138,19 @@ def _statement_line(statement, interpretation: FundInterpretation, label: str = 
     return f"- {prefix}{_text(statement.text)}" + ("（" + "；".join(citations) + "）" if citations else "")
 
 
+def _repair_note(scope):
+    """Render only program-owned repair states, never provider/model text."""
+    labels = {
+        "succeeded": "修正一次后通过校验。",
+        "failed": "修正仍未获得可用解读；保留程序数据。",
+        "skipped_budget": "首次解读未通过，剩余时间不足，未追加修正；保留程序数据。",
+        "skipped_busy": "首次解读未通过，已有请求尚未结束，未追加修正；保留程序数据。",
+    }
+    status = getattr(scope, "repair_status", None)
+    label = labels.get(status) if isinstance(status, str) else None
+    return f"- AI：{label}" if label else None
+
+
 def _decision_lines(insight, interpretation):
     """Show a validated research view, never invent a stance after model failure."""
     decision = getattr(insight, "decision", None)
@@ -352,6 +365,16 @@ def _brief_news(bundle, fallback, nav_date, *, fund_code=None, insight=None, int
         if impact is not None and interpretation is not None:
             lines.append(_statement_line(impact.transmission, interpretation, "可能影响（标题线索未核实）"))
             lines.append("  对基金影响幅度未知，不能据此解释已发生的净值变化。")
+    assessment = getattr(insight, "news_assessment", None)
+    if assessment is not None:
+        if assessment.status in {"insufficient_evidence", "conditional_impacts"} and assessment.explanation is not None and interpretation is not None:
+            lines.append(_statement_line(assessment.explanation, interpretation, "新闻影响尚无法判断"))
+        elif assessment.status == "no_eligible_news":
+            lines.append("- 本次未取得可分析的关联新闻，无法核实是否有重要事件及其影响。")
+    elif insight is not None and not impacts:
+        lines.append("- 本次模型未提供新闻影响分析，不能由标题推定影响。")
+    elif not digest["items"]:
+        lines.append("- 本次未取得可分析的关联新闻，不能据此判断没有重要事件。")
     coverage = bundle.get("coverage", {}) if isinstance(bundle, dict) else bundle.coverage
     status_labels = {"timeout": "新闻检索失败：请求超时", "unavailable": "新闻检索不可用",
                      "skipped_budget": "部分检索未执行：查询、时间或条数预算用尽",
@@ -387,7 +410,10 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
         accepted = (interpretation is not None and interpretation.status in {"ok", "partial"}
                     and insight is not None and scope is not None and scope.status == "ok")
         decision = getattr(insight, "decision", None) if accepted else None
+        repair_note = _repair_note(scope)
         if accepted:
+            if repair_note:
+                lines.append(repair_note)
             lines.extend(_decision_lines(insight, interpretation))
             if decision is not None:
                 lines.extend(_statement_line(statement, interpretation, "主要风险") for statement in insight.risks[:1])
@@ -398,6 +424,8 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
                     if statements:
                         lines.append(f"**{label}**")
                         lines.extend(_statement_line(statement, interpretation) for statement in statements)
+        elif repair_note:
+            lines.append(repair_note)
         elif interpretation is not None and (interpretation.status == "partial"
                                             or interpretation.status == "ok" and scope is None):
             lines.append(f"- AI：{_scope_label(scope)}。")
@@ -436,6 +464,10 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
         lines.append("")
     if interpretation is not None and (interpretation.provider or interpretation.model):
         lines.append(f"实际模型：{_text(interpretation.model or '未返回')}；供应方：{_text(interpretation.provider or '未返回')}。")
+    if interpretation is not None:
+        repair_model, repair_provider = getattr(interpretation, "repair_model", ""), getattr(interpretation, "repair_provider", "")
+        if (repair_model or repair_provider) and (repair_model, repair_provider) != (interpretation.model, interpretation.provider):
+            lines.append(f"修正请求实际模型：{_text(repair_model or '未返回')}；供应方：{_text(repair_provider or '未返回')}。")
     if interpretation is not None and interpretation.status == "disabled" and "历史截止日" in interpretation.reason:
         lines.append(_text(interpretation.reason))
     return "\n".join(lines) + "\n"
@@ -538,9 +570,20 @@ def run_fund_analysis(
         )
     for code, scope in [*interpretation.fund_statuses.items(), ("comparison", interpretation.comparison_status)]:
         scope.diagnostics = safe_interpretation_diagnostics(scope.diagnostics)
+        repair_status = getattr(scope, "repair_status", "not_attempted")
+        scope.repair_status = repair_status if isinstance(repair_status, str) and repair_status in {
+            "not_attempted", "succeeded", "failed", "skipped_budget", "skipped_busy",
+        } else "not_attempted"
+        scope.repair_diagnostics = safe_interpretation_diagnostics(getattr(scope, "repair_diagnostics", {}))
+        if scope.repair_status != "not_attempted":
+            logger.info("[基金] 模型修正状态 %s: %s %s", code, scope.repair_status,
+                        json.dumps(scope.repair_diagnostics, ensure_ascii=True, sort_keys=True))
         if scope.status == "model_failed" and scope.diagnostics:
             logger.info("[基金] 模型解读范围安全诊断 %s: %s", code,
                         json.dumps(scope.diagnostics, ensure_ascii=True, sort_keys=True))
+    for name in ("repair_model", "repair_provider"):
+        value = getattr(interpretation, name, "")
+        setattr(interpretation, name, value[:200] if isinstance(value, str) and not any(ord(c) < 32 for c in value) else "")
     interpretation.diagnostics = safe_interpretation_diagnostics(interpretation.diagnostics)
     if interpretation.diagnostics:
         logger.info("[基金] 模型解读安全诊断: %s", json.dumps(interpretation.diagnostics, ensure_ascii=True, sort_keys=True))

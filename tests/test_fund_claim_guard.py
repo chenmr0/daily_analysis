@@ -265,7 +265,9 @@ def test_real_service_keeps_accepted_fund_and_scrubs_categories_in_all_outputs(t
     assert saved["interpretation"]["fund_statuses"]["025500"]["diagnostics"]["claim_category"] == "guarantee"
     assert "claim_category=guarantee" not in report.markdown.replace("\\", "")
     assert '"claim_category": "guarantee"' in caplog.text
-    assert RETURN_RISK in report.markdown
+    assert saved["interpretation"]["funds"]["018123"]["conclusion"][0]["text"] == RETURN_RISK
+    # Compact decisions suppress the old conclusion, but preserve it in JSON.
+    assert "操作倾向" in report.markdown
     assert report.notification_status == "disabled"
     for secret in (unsafe, "SECRET_MODEL_RAW", "SECRET_MATCH", "SECRET_UNKNOWN_ID", "SECRET_PROVIDER_KEY", "SECRET_BAD_CATEGORY"):
         assert secret not in saved_text + report.markdown + caplog.text

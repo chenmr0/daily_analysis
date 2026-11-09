@@ -39,6 +39,14 @@ def valid_output(codes=("000001",)):
         prefix = f"F{code}"
         funds.append({
             "fund_code": code,
+            "decision": {
+                "direction": "undetermined", "basis": "information_gap",
+                "rationale": {"text": "区间净值资料不足以判断经营变化，需要进一步核验研究依据。", "evidence_ids": [prefix + ":return_1m"]},
+                "conditions": {"text": "需补充基金相关经营资料，才能形成有依据的研究判断。", "evidence_ids": [prefix + ":profile"]},
+                "invalidation": {"text": "若资料补充使研究依据清晰，应重新评估原有判断。", "evidence_ids": [prefix + ":quality"]},
+            },
+            "news_impacts": [],
+            "news_assessment": {"status": "no_eligible_news", "explanation": None},
             "conclusion": [{"text": "已披露区间表现提供历史参考，仍需结合净值口径理解。", "evidence_ids": [prefix + ":return_1m"]}],
             "risks": [{"text": "净值资料的完整性限制解读，应保留对后续波动的不确定性。", "evidence_ids": [prefix + ":quality"]}],
             "evidence": [{"text": "可核对程序计算的区间依据：{{" + prefix + ":return_1m}}", "evidence_ids": [prefix + ":return_1m"]}],
