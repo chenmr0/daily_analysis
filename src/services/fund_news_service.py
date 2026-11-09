@@ -22,6 +22,58 @@ from src.core.fund_analysis import FundData, FundRelatedAsset
 
 CATEGORIES = ("announcement", "direct_fund", "target_etf", "holding", "industry", "theme")
 PRODUCT_THEMES = ("数字经济", "人工智能", "半导体", "新能源", "机器人", "医药", "医疗", "消费")
+# These describe what a headline can support, not verification of the event.
+EVIDENCE_SCOPES = ("fund_event", "related_event", "sector_context", "weak_background")
+FILTER_REASONS = ("invalid_title", "invalid_url", "identity_mismatch", "not_announcement",
+                  "static_page", "third_party_product", "no_event_signal", "duplicate_url", "selection_limit")
+REASON_LABELS = {
+    "invalid_title": "标题不可用", "invalid_url": "链接不可用", "identity_mismatch": "身份或关联不匹配",
+    "not_announcement": "无公告标题语境", "static_page": "静态行情或资料页",
+    "third_party_product": "其他产品持仓提及", "no_event_signal": "缺少事件内容",
+    "duplicate_url": "重复链接", "selection_limit": "条数上限未保留",
+    "fund_event": "基金事件线索", "related_event": "关联对象事件线索",
+    "sector_context": "具体行业或主题背景", "weak_background": "宽泛行业弱背景",
+}
+_BROAD_INDUSTRIES = frozenset({
+    "制造业", "工业", "服务业", "科技", "金融", "金融业", "农业", "采矿业", "建筑业", "房地产业",
+    "农、林、牧、渔业", "电力、热力、燃气及水生产和供应业", "批发和零售业",
+    "交通运输、仓储和邮政业", "住宿和餐饮业", "信息传输、软件和信息技术服务业",
+    "租赁和商务服务业", "科学研究和技术服务业", "水利、环境和公共设施管理业",
+    "居民服务、修理和其他服务业", "教育", "卫生和社会工作", "文化、体育和娱乐业", "综合",
+})
+_ANNOUNCEMENT_CONTEXT = re.compile(r"公告|季度报告|年度报告|中期报告|招募说明书|基金合同")
+_EVENT_CONTEXT = re.compile(
+    r"公告|报告|招募说明书|基金合同|财报|季报|年报|中报|业绩|营收|营业收入|净利|毛利|盈利|亏损|"
+    r"回购|分红|派息|收购|并购|增持|减持|融资|董事会|股东大会|上市|停牌|复牌|"
+    r"发布|公布|披露|宣布|召开|推出|新产品|中标|订单|签订|获批|获准|处罚|诉讼|"
+    r"涨停|跌停|上涨|下跌|[涨跌][0-9]|增长|减少|增加|开放申购|暂停申购|恢复申购|"
+    r"限购|清盘|变更|调整|新政|政策|新进展|数据更新|"
+    r"\b(?:announces?|announced|launch(?:es|ed)?|earnings|revenue|profit|dividends?|"
+    r"buyback|merger|acquisition|rises?|falls?)\b", re.I,
+)
+_PRODUCT_CONTEXT = re.compile(r"ETF|基金|\bfund\b", re.I)
+_PORTFOLIO_CONTEXT = re.compile(r"重仓|持仓|成[分份]股|投资组合|\b(?:holdings?|portfolio|constituents?)\b", re.I)
+_STATIC_TITLE = re.compile(
+    r"股票股价|股价行情|行情走势|实时行情|历史行情|净值估值|历史净值|净值走势|"
+    r"基金档案|基金概况|基金资料|基本资料|基本信息|\b(?:stock quote|fund profile)\b", re.I,
+)
+_EVENT_ACTION = re.compile(
+    r"发布|公布|披露|宣布|召开|推出|中标|签订|获批|获准|处罚|诉讼|回购|收购|并购|"
+    r"分红|派息|涨停|跌停|上涨|下跌|[涨跌][0-9]|增长|减少|增加|暂停|恢复|变更|调整|修订|出炉|"
+    r"\b(?:announces?|announced|launch(?:es|ed)?|rises?|falls?|buyback|merger|acquisition)\b", re.I,
+)
+_ISSUER_EVENT = re.compile(
+    r"财报|季报|年报|中报|业绩|营收|营业收入|净利|毛利|盈利|亏损|董事会|股东大会|新产品|停牌|复牌|"
+    r"\b(?:earnings|revenue|profit|dividends?)\b", re.I,
+)
+_SPECIFIC_EVENT = re.compile(
+    r"(?:暂停|恢复|限制|开放|停止|取消|延长|提高|降低).{0,12}(?:申购|赎回|转换|定投|募集|限额|费率)|"
+    r"(?:申购|赎回|转换|定投|募集|限额|费率).{0,12}(?:暂停|恢复|限制|开放|停止|取消|延长|提高|降低)|"
+    r"(?:基金经理|经理).{0,16}(?:离任|卸任|上任|变动|增聘|解聘|履新)|"
+    r"(?:离任|卸任|上任|增聘|解聘).{0,16}基金经理|"
+    r"创(?:下)?(?:历史|年内|阶段性)?新[高低]|刷新.{0,8}(?:高点|低点|纪录)|"
+    r"(?:股价|净值).{0,8}(?:突破|跌破)", re.I,
+)
 _ISSUER_CONTEXT = re.compile(
     r"公司|集团|股份|董事|股东|财报|季报|年报|中报|业绩|营收|营业收入|净利|毛利|盈利|亏损|"
     r"股票|股价|证券|回购|分红|派息|市值|每股|上市|停牌|复牌|涨停|跌停|增持|减持|"
@@ -50,6 +102,8 @@ class FundNewsItem:
     relation_basis: str
     source_date: Optional[date] = None
     source_url: str = ""
+    evidence_scope: str = "weak_background"
+    model_eligible: bool = False
 
 
 @dataclass
@@ -60,6 +114,8 @@ class FundNewsCoverage:
     fresh: int = 0
     rejected: int = 0
     detail: str = ""
+    # One finite-enum outcome per inspected search result. No provider content.
+    reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -159,6 +215,61 @@ def _headline_matches_related(title: str, asset: FundRelatedAsset) -> bool:
     if asset.category in {"industry", "theme"}:
         return _headline_matches_fund(title, asset.name) and bool(_SECTOR_CONTEXT.search(title))
     return _headline_matches_fund(title, asset.name)
+
+
+def _static_page(title: str, url: str) -> bool:
+    """A search timestamp cannot turn a quote/profile endpoint into an article."""
+    parts = urlsplit(url)
+    host, path = parts.hostname or "", parts.path.rstrip("/")
+    if ((host == "xueqiu.com" or host.endswith(".xueqiu.com"))
+            and re.fullmatch(r"/S/[A-Za-z0-9.]+", path, re.I)):
+        return True
+    if host == "quote.eastmoney.com" or host.endswith(".quote.eastmoney.com"):
+        return True
+    if host == "finance.sina.com.cn" and re.fullmatch(r"/realstock/company/[^/]+/nc.shtml", path):
+        return True
+    return bool(_STATIC_TITLE.search(title) and not (_EVENT_ACTION.search(title) or _SPECIFIC_EVENT.search(title)))
+
+
+def _other_product_portfolio(title: str, asset: FundRelatedAsset) -> bool:
+    """Mention in another product's portfolio is not an issuer event.
+
+    Keep a separately stated company event (including price/earnings analysis),
+    even if the same headline also mentions a fund holding that company.
+    """
+    if not (_PRODUCT_CONTEXT.search(title) and _PORTFOLIO_CONTEXT.search(title)):
+        return False
+    name = unicodedata.normalize("NFKC", _plain(asset.name, 100))
+    for clause in re.split(r"[,，;；。|｜]", unicodedata.normalize("NFKC", title)):
+        match = re.search(re.escape(name).replace(r"\ ", r"\s+"), clause, re.I)
+        if not match:
+            continue
+        # Stop before an explicit change of subject. An event later in the
+        # headline may belong to a different constituent, not this issuer.
+        after = re.split(r"然而|但是|同时|此外|另外|并且|以及|而|但|却|、", clause[match.end():], maxsplit=1)[0]
+        signals = [match for pattern in (_EVENT_ACTION, _ISSUER_EVENT, _SPECIFIC_EVENT)
+                   if (match := pattern.search(after))]
+        event = min(signals, key=lambda match: match.start()) if signals else None
+        # A subsequent fund/portfolio subject owns its event, not the company.
+        if event and not (_PRODUCT_CONTEXT.search(after[:event.end()])
+                          or _PORTFOLIO_CONTEXT.search(after[:event.end()])):
+            return False
+    return True
+
+
+def _evidence_scope(category: str, asset: Optional[FundRelatedAsset]) -> str:
+    if category in {"announcement", "direct_fund"}:
+        return "fund_event"
+    if category in {"industry", "theme"}:
+        return "weak_background" if asset and asset.name in _BROAD_INDUSTRIES else "sector_context"
+    return "related_event"
+
+
+def _record_outcome(coverage: FundNewsCoverage, reason: str) -> None:
+    # The enum is code-owned; no result titles, URLs, or exception strings enter it.
+    if reason not in REASON_LABELS:
+        raise ValueError("Unknown fund news outcome")
+    coverage.reason_counts[reason] = coverage.reason_counts.get(reason, 0) + 1
 
 
 def _publication(value) -> Optional[date]:
@@ -319,13 +430,27 @@ def gather_fund_news(data: FundData, search_service, *, as_of: Optional[date] = 
         for result in results:
             title, url = _plain(getattr(result, "title", "")), _safe_url(getattr(result, "url", ""))
             matches = _headline_matches_related(title, asset) if asset else _headline_matches_fund(title, topic)
-            if not title or not url or not matches:
+            reason = ""
+            if not title:
+                reason = "invalid_title"
+            elif not url:
+                reason = "invalid_url"
+            elif not matches:
+                reason = "identity_mismatch"
+            elif _static_page(title, url):
+                reason = "static_page"
+            elif category == "holding" and _other_product_portfolio(title, asset):
+                reason = "third_party_product"
+            elif category == "announcement" and not _ANNOUNCEMENT_CONTEXT.search(title):
+                reason = "not_announcement"
+            elif not (_EVENT_CONTEXT.search(title) or _SPECIFIC_EVENT.search(title)):
+                reason = "no_event_signal"
+            if reason:
                 coverage.rejected += 1
-                continue
-            if category == "announcement" and not re.search(r"公告|季度报告|年度报告|中期报告|招募说明书|基金合同", title):
-                coverage.rejected += 1
+                _record_outcome(coverage, reason)
                 continue
             if url in seen:
+                _record_outcome(coverage, "duplicate_url")
                 continue
             published = _publication(getattr(result, "published_date", None))
             candidates.append((result, title, url, published, _date_status(published, as_of, fresh_days)))
@@ -334,21 +459,30 @@ def gather_fund_news(data: FundData, search_service, *, as_of: Optional[date] = 
         accepted_this_query = 0
         for result, title, url, published, status in candidates:
             if url in seen:
+                _record_outcome(coverage, "duplicate_url")
+                continue
+            if len(bundle.items) >= max_items or accepted_this_query >= (1 if asset is None else 2):
+                _record_outcome(coverage, "selection_limit")
                 continue
             relation = _basis(asset, as_of) if asset else "标题含本基金全名（含份额类别），仅身份匹配，未作涨跌归因。"
             if category == "announcement":
                 relation += "公告相关检索结果，未将搜索摘要当作公告全文核验。"
+            scope = _evidence_scope(category, asset)
+            if scope == "weak_background":
+                relation += " 宽泛行业名匹配，仅作弱背景；不作为模型事件证据。"
+            elif scope == "sector_context":
+                relation += " 仅具体行业/主题背景，不是本基金具体事件。"
             bundle.items.append(FundNewsItem(
                 category, title, url, _plain(getattr(result, "source", ""), 100), published, status,
                 _retrieval(getattr(result, "retrieved_at", None), acquired_at), relation,
                 source_date=asset.source_date if asset else None,
-                source_url=asset.source_url if asset else _safe_url(data.profile.source_url)))
+                source_url=asset.source_url if asset else _safe_url(data.profile.source_url),
+                evidence_scope=scope, model_eligible=(status == "fresh" and scope != "weak_background")))
             seen.add(url)
             coverage.accepted += 1
             coverage.fresh += status == "fresh"
+            _record_outcome(coverage, scope)
             accepted_this_query += 1
-            if len(bundle.items) >= max_items or accepted_this_query >= (1 if asset is None else 2):
-                break
         if coverage.accepted:
             coverage.status = "ok" if coverage.fresh else "no_fresh_evidence"
             coverage.detail = "已保留身份/关联匹配结果，优先选择日期明确且在窗口内的近期条目；其余仅作线索。"
@@ -356,6 +490,8 @@ def gather_fund_news(data: FundData, search_service, *, as_of: Optional[date] = 
             coverage.status, coverage.detail = "none_filtered", "未找到通过本基金身份匹配或已核验关联筛选的新闻（重复链接只保留一次）；不代表没有相关事件。"
     if any(i.date_status != "fresh" for i in bundle.items):
         bundle.warnings.append("日期未知、未来日期和过期新闻仅列作线索，不支持近期事件或涨跌原因结论。")
+    if any(i.evidence_scope == "weak_background" for i in bundle.items):
+        bundle.warnings.append("宽泛行业新闻单列为弱背景，不进入模型事件证据，不证明基金受影响。")
     if any(a.category in {"holding", "industry"} for a in assets):
         bundle.warnings.append("股票/行业新闻依赖所标注报告期的关系；定期披露滞后，不代表当前敞口或收益归因。")
     if bundle.coverage["holding"].queries:

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.core.fund_analysis import FundData, FundProfile, FundRelatedAsset, Holding, HoldingsSnapshot, NavPoint
-from src.services.fund_news_service import _headline_matches_fund, gather_fund_news
+from src.services.fund_news_service import EVIDENCE_SCOPES, FILTER_REASONS, REASON_LABELS, _headline_matches_fund, gather_fund_news
 
 TODAY = date(2026, 11, 9)
 
@@ -183,7 +183,7 @@ def test_newsflood_does_not_crowd_out_related_evidence():
     service = search()
     service.search_topic_news_bounded.side_effect = [
         SimpleNamespace(success=True, results=[item(url=f"https://news.example.com/a{i}") for i in range(100)]),
-        SimpleNamespace(success=True, results=[item("测试基金C新闻", url=f"https://news.example.com/d{i}") for i in range(100)]),
+        SimpleNamespace(success=True, results=[item("测试基金C开放申购", url=f"https://news.example.com/d{i}") for i in range(100)]),
         SimpleNamespace(success=True, results=[item("可靠公司公告", url=f"https://news.example.com/h{i}") for i in range(100)]),
     ]
     bundle = gather_fund_news(holding_data("000001", "可靠公司"), service, as_of=TODAY)
@@ -280,3 +280,170 @@ def test_public_call_bounds_cannot_expand_request_or_item_budget(bounds):
     with pytest.raises(ValueError):
         gather_fund_news(sample(), service, as_of=TODAY, **bounds)
     service.search_topic_news_bounded.assert_not_called()
+
+
+@pytest.mark.parametrize("title,url", [
+    ("壁仞科技(06082)股票股价_股价行情_讨论_资讯_财报_数据报告", "https://xueqiu.com/S/06082"),
+    ("壁仞科技(06082)股票股价_股价行情_讨论_资讯_财报_数据报告", "https://news.example.com/profile"),
+    ("壁仞科技股价上涨", "https://xueqiu.com/S/06082"),
+    ("壁仞科技财报数据", "https://quote.eastmoney.com/hk/06082.html"),
+    ("壁仞科技股票资料", "https://finance.sina.com.cn/realstock/company/hk06082/nc.shtml"),
+])
+def test_quote_pages_are_not_events_even_with_fresh_search_dates(title, url):
+    # First fixture is a preserved run #4 result; its date did not prove an event.
+    bundle = gather_fund_news(holding_data("06082", "壁仞科技"), search(item(title, url)), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["holding"].reason_counts == {"static_page": 1}
+
+
+@pytest.mark.parametrize("title,accepted", [
+    ("11月6日新材料ETF天弘基金份额减少60万份，重仓股北方华创、宁德时代、三环集团", False),
+    ("新材料ETF公布股票投资组合，北方华创为第一大重仓股", False),
+    ("新材料ETF增持北方华创，最新持仓公布", False),
+    ("北方华创股票为新材料ETF重仓股，基金份额增长", False),
+    ("新材料ETF持仓名单：北方华创股票资料报告", False),
+    ("北方华创股价上涨5%，新材料ETF重仓该股", True),
+    ("新材料ETF重仓股北方华创发布季度财报", True),
+    ("北方华创公布回购计划，新材料ETF持仓受关注", True),
+    ("北方华创盈利数据分析，新材料ETF重仓该股", True),
+])
+def test_other_product_portfolio_mentions_do_not_establish_issuer_events(title, accepted):
+    # The first title was incorrectly accepted as a company event in run #4.
+    bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(title)), as_of=TODAY)
+    assert bool(bundle.items) is accepted
+    if accepted:
+        assert bundle.items[0].evidence_scope == "related_event"
+        assert bundle.items[0].model_eligible is True
+    else:
+        assert bundle.coverage["holding"].reason_counts == {"third_party_product": 1}
+
+
+def test_run4_broad_manufacturing_news_is_display_only_background():
+    data = sample()
+    data.related_assets = [FundRelatedAsset("industry", "制造业", "https://fund.example.com/industry",
+                                           source_date=date(2026, 9, 30), verified=True)]
+    bundle = gather_fund_news(data, search(item(
+        "建设银行推出多项措施支持先进制造业-36氪", "https://www.36kr.com/newsflashes/4053282417513609")), as_of=TODAY)
+    news = bundle.items[0]
+    assert news.category == "industry" and news.date_status == "fresh"
+    assert news.evidence_scope == "weak_background" and news.model_eligible is False
+    assert news.source_date == date(2026, 9, 30)
+    assert news.source_url == data.related_assets[0].source_url
+    assert news.source == "测试来源" and news.published_date == date(2026, 11, 8)
+    assert "不作为模型事件证据" in news.relation_basis
+    assert bundle.coverage["industry"].reason_counts == {"weak_background": 1}
+
+
+@pytest.mark.parametrize("category,name,title", [
+    ("industry", "半导体", "半导体产业新政策发布"),
+    ("theme", "数字经济", "数字经济产业新进展"),
+])
+def test_precise_sector_and_product_theme_remain_context_not_fund_events(category, name, title):
+    data = sample(f"测试{name}混合C")
+    if category == "industry":
+        data.related_assets = [FundRelatedAsset(category, name, "https://fund.example.com/industry",
+                                               source_date=date(2026, 9, 30), verified=True)]
+    bundle = gather_fund_news(data, search(item(title)), as_of=TODAY)
+    news = bundle.items[0]
+    assert news.evidence_scope == "sector_context" and news.model_eligible is True
+    assert "不是本基金具体事件" in news.relation_basis
+
+
+@pytest.mark.parametrize("title,reason", [
+    ("测试基金C基金档案与基本资料", "static_page"),
+    ("测试基金C历史净值与净值走势", "static_page"),
+    ("测试基金C资讯中心", "no_event_signal"),
+])
+def test_identity_matching_is_not_event_content(title, reason):
+    bundle = gather_fund_news(sample(), search(item(title)), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["direct_fund"].reason_counts == {reason: 1}
+
+
+@pytest.mark.parametrize("title", ["测试基金C公告：暂停申购", "测试基金C净值走势发生调整公告",
+                                   "测试基金C招募说明书", "测试基金C基金合同"])
+def test_announcement_leads_are_not_claimed_to_be_officially_verified(title):
+    bundle = gather_fund_news(sample(), search(item(title)), as_of=TODAY)
+    news = bundle.items[0]
+    assert news.evidence_scope == "fund_event" and news.model_eligible is True
+    assert "仅身份匹配" in news.relation_basis
+    assert "未将搜索摘要当作公告全文核验" in news.relation_basis
+    assert news.source_url == sample().profile.source_url
+
+
+@pytest.mark.parametrize("day", [None, "2025-01-01", "2026-11-10"])
+def test_event_scope_does_not_override_freshness_requirement(day):
+    bundle = gather_fund_news(sample(), search(item(day=day)), as_of=TODAY)
+    assert bundle.items[0].evidence_scope == "fund_event"
+    assert bundle.items[0].model_eligible is False
+
+
+def test_diagnostic_counts_have_one_finite_outcome_per_inspected_result():
+    service = search(
+        item(url="https://news.example.com/stale", day="2025-01-01"),
+        item(url="https://news.example.com/fresh"),
+        item(url="https://news.example.com/fresh#duplicate"),
+        item(title="", snippet="untrusted diagnostic content"),
+        item(title="其他基金A公告"),
+        item(url="https://news.example.com/not-inspected"))
+    bundle = gather_fund_news(sample(), service, as_of=TODAY, max_queries=1)
+    assert [news.url for news in bundle.items] == ["https://news.example.com/fresh"]
+    counts = bundle.coverage["announcement"].reason_counts
+    assert counts == {"invalid_title": 1, "identity_mismatch": 1, "fund_event": 1,
+                      "duplicate_url": 1, "selection_limit": 1}
+    assert sum(counts.values()) == 5
+    assert set(REASON_LABELS) == set(EVIDENCE_SCOPES) | set(FILTER_REASONS)
+    assert "untrusted" not in str(counts)
+    assert service.search_topic_news_bounded.call_count == 1
+
+
+def test_failed_search_has_no_unbounded_diagnostic_reason():
+    service = search()
+    service.search_topic_news_bounded.side_effect = RuntimeError("provider payload and secret")
+    bundle = gather_fund_news(sample(), service, as_of=TODAY)
+    assert all(not coverage.reason_counts for coverage in bundle.coverage.values())
+    assert "provider payload" not in str(bundle)
+
+
+@pytest.mark.parametrize("title", [
+    "测试基金C暂停大额申购", "测试基金C恢复大额赎回", "测试基金C限制定投金额",
+    "测试基金C申购限额降低", "测试基金C基金经理离任", "测试基金C基金经理履新",
+    "测试基金C增聘基金经理", "测试基金C基金经理发生变动", "测试基金C创历史新高",
+])
+def test_concrete_fund_operational_events_do_not_need_announcement_word(title):
+    bundle = gather_fund_news(sample(), search(item(title)), as_of=TODAY)
+    assert len(bundle.items) == 1
+    assert bundle.items[0].category == "direct_fund"
+    assert bundle.items[0].evidence_scope == "fund_event" and bundle.items[0].model_eligible
+
+
+@pytest.mark.parametrize("title", [
+    "北方华创股价创历史新高", "北方华创股价创下年内新低",
+    "北方华创股价突破前期高点，基金持仓关注度提高",
+    "北方华创业绩创历史新高，基金持仓比例增加",
+])
+def test_concrete_issuer_events_survive_context_filter(title):
+    bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(title)), as_of=TODAY)
+    assert bundle.items[0].evidence_scope == "related_event"
+    assert bundle.items[0].model_eligible
+
+
+def test_new_event_patterns_do_not_turn_static_quote_endpoint_into_article():
+    bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(
+        "北方华创股价创历史新高", "https://quote.eastmoney.com/sz002371.html")), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["holding"].reason_counts == {"static_page": 1}
+
+
+@pytest.mark.parametrize("separator", ["而", "但是", "同时", "此外", "另外", "并且", "以及", "、", "；"])
+def test_another_constituents_event_is_not_attributed_across_subject_boundary(separator):
+    title = f"新材料ETF重仓北方华创{separator}宁德时代宣布回购"
+    bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(title)), as_of=TODAY)
+    assert not bundle.items
+    assert bundle.coverage["holding"].reason_counts == {"third_party_product": 1}
+
+
+def test_issuer_event_before_subject_change_remains_eligible():
+    title = "新材料ETF重仓北方华创业绩增长，而宁德时代宣布回购"
+    bundle = gather_fund_news(holding_data("002371", "北方华创"), search(item(title)), as_of=TODAY)
+    assert bundle.items[0].model_eligible

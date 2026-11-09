@@ -87,7 +87,11 @@ QDII显示实际净值日期、数据年龄和延迟提示，不硬编码“T+2�
 - 已披露重仓：选明细中权重最大的至多两项；名称和原样代码保留在查询/来源中。短名称或常见单词必须在标题同时出现原代码和金融/公司语境，不猜别名或市场，较长名称也要求公司语境。保留报告期及披露日期未知标记，不证明现阶段仍持有或造成涨跌。
 - 行业：优先带报告期的行业配置；缺配置时仅用产品名称中明确主题词，并注明“名称主题，非持仓配置”。行业/主题标题也需行业语境，不据此核验公司身份。
 
-每基金最多六次检索、总等待三十六秒、单次最多十二秒、总计最多十条去重结果。对已返回的最多五个候选先筛身份/URL，再优先保留有效期内的新闻，其他日期仅作为警示线索；公告/直接新闻各最多一条，避免占满关联新闻配额。每条保存来源、发布日期、抓取时间、关联依据和资料日期。`fresh/stale/unknown/future` 明确区分时效，只有fresh标题进入模型当前事件证据。各类别覆盖状态区分未配置、无关系、无结果、过滤、超时或预算不足，不把“未找到”解释为“没有风险”。拒绝脚本、私网及异常链接；外部文本经HTML/Markdown转义。
+每基金最多六次检索、总等待三十六秒、单次最多十二秒、总计最多十条去重结果。静态行情/资料页不作为事件新闻；其他基金或ETF的持仓名单提及不视为该公司的事件，只有标题另有该公司自身事件时才保留。对已返回的最多五个候选先筛身份/URL，再优先保留有效期内的新闻，其他日期仅作为警示线索；公告/直接新闻各最多一条，避免占满关联新闻配额。每条保存来源、发布日期、抓取时间、关联依据和资料日期。`fresh/stale/unknown/future` 明确区分时效，只有fresh标题进入模型当前事件证据。各类别覆盖状态区分未配置、无关系、无结果、过滤、超时或预算不足，不把“未找到”解释为“没有风险”。拒绝脚本、私网及异常链接；外部文本经HTML/Markdown转义。
+
+JSON新闻追加 `evidence_scope` 和 `model_eligible`：`fund_event` 是本基金事件线索，`related_event` 是关联对象事件线索，`sector_context` 是具体行业/主题背景，`weak_background` 是制造业等宽泛行业背景。它们都不是事实认证。宽泛背景在报告独立列出，明确不作为模型事件证据；`fresh` 仅表示检索日期在窗口内，不等于关联充分或事件已核实。只有日期和内容资格同时满足的结果才进入模型线索，具体行业背景也不能当成基金事件。
+
+每类检索的 `coverage.reason_counts` 保存固定原因与计数，包括静态页、其他产品持仓提及、缺事件内容、身份不符、重复、额度舍弃和最终保留类别。标准日志只记录这些固定代码/计数，不记录诊断对象的标题、URL或供应商异常原文。已有新闻标题及公开来源仍作为报告正常证据保存。
 
 严格匹配可能漏报；标题不等于事实核验。新闻失败不丢弃有效净值。
 
@@ -99,7 +103,9 @@ QDII显示实际净值日期、数据年龄和延迟提示，不硬编码“T+2�
 
 横向表只并列净值日期与真实指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
 
-状态 `ok/disabled/unavailable/model_failed` 均有原因。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
+状态 `ok/disabled/unavailable/model_failed` 均有原因。失败的 `interpretation.diagnostics` 在JSON、报告和标准日志中保留白名单诊断：固定阶段/错误码、已确认基金代码、章节及从零开始的位置索引，另有字符数、字节数、引用数或JSON行列等计数。诊断不保存模型原文、证据文本、未知字段、未知引用ID、密钥或供应商异常字符串；未知诊断字段丢弃。仅报告首个阻断校验，不表示其他校验已经通过；增加诊断不会追加模型调用或自动发送。
+
+仅凭HTTP成功不代表解读通过。此前只保留统一校验错误的报告不能回溯具体子校验原因；新诊断只适用于应用补丁后的运行。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
 
 最多二十只基金、提示词一百五十KB、输出四十八KB、输出token上限六千。默认报告等待四十五秒，单进程只有一个未结束请求。等待期限不是网络硬取消：已有云端请求或配置回退可能继续至底层超时并产生费用；迟到结果不采用，也不补发报告或邮件。
 
@@ -125,4 +131,4 @@ python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/te
 
 This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange fund NAV reports. Use `--funds` (optionally reading `FUND_LIST`), never `STOCK_LIST`. Manual `funds-only` dispatch accepts a one-time `fund_codes` override; fund reruns suppress notifications. No fund cron is added or enabled, and the original stock schedule is unchanged. Existing stock/ETF routes remain unchanged. Run with `--no-notify --fund-no-news --fund-no-ai` for safe live validation. It saves separate Markdown/JSON artifacts, validates identity and dates, and reuses existing news and notification services. Direct news requires full fund/share-class headline identity. Related news requires verified ETF identities or dated holdings/industry relationships, issuer/sector context and freshness metadata; strict matching reduces recall. Only fresh news enters model evidence. Return metrics are conservative event-free unit-NAV changes, not a claimed reinvested total-return series. Distributions, missing data and insufficient history produce N/A. QDII publication lags and dated holdings are explicit. Web/API/scheduling, look-through, subscriptions/redemptions, trading and backtesting are out of scope. Fund profile failures use one identity-checked same-provider homepage fallback, preserving diagnostics and missing-field warnings. All data currently comes from the same Eastmoney source family.
 
-The fund CLI now attempts evidence-cited cloud narrative through the existing configured model interface; use `--fund-no-ai` or manual workflow `fund_no_ai` to disable it. Structured numeric/date placeholders are program-owned. Conservative free-prose checks do not guarantee semantic truth or eliminate every quantitative/temporal error. Actual model/provider identity and explicit degradation states are reported. No local CLI backend or private/plain-HTTP model endpoint is allowed. Endpoint validation does not resolve DNS. The report deadline is not hard cancellation of an in-flight cloud request. Model/provider-boundary mocks do not constitute live API validation.
+The fund CLI now attempts evidence-cited cloud narrative through the existing configured model interface; use `--fund-no-ai` or manual workflow `fund_no_ai` to disable it. Structured numeric/date placeholders are program-owned. Conservative free-prose checks do not guarantee semantic truth or eliminate every quantitative/temporal error. Actual model/provider identity and explicit degradation states are reported. No local CLI backend or private/plain-HTTP model endpoint is allowed. Endpoint validation does not resolve DNS. The report deadline is not hard cancellation of an in-flight cloud request. Model/provider-boundary mocks do not constitute live API validation. Validation diagnostics now use finite stage/reason codes, validated positions and bounded counts without retaining model output or provider exception text. Legacy generic failures cannot be retroactively attributed. Quote/profile pages and mere mentions in another fund’s portfolio are not issuer events; broad-sector background is separately labelled and excluded from model evidence. News freshness alone is not relevance or event verification.

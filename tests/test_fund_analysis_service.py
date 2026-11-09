@@ -299,3 +299,107 @@ def test_real_interpretation_adapter_resolves_program_facts_in_report(tmp_path):
     assert "{{" not in report.markdown and "test-model" in report.markdown
     assert "2026-11-06" in report.markdown
     analyzer.generate_text_with_metadata.assert_called_once()
+
+
+def test_component_diagnostic_is_consistent_and_never_leaks_exception(tmp_path, caplog):
+    caplog.set_level('INFO', logger='src.services.fund_analysis_service')
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    secret = 'sk-private-provider-response-do-not-log'
+    report = run_fund_analysis('001672', fetcher=fetcher, include_news=False,
+                               include_interpretation=True, interpreter=Mock(side_effect=RuntimeError(secret)),
+                               output_dir=tmp_path)
+    saved = json.loads(open(report.snapshot_path, encoding='utf-8').read())
+    assert saved['interpretation']['diagnostics'] == {'stage': 'component', 'code': 'component_failed'}
+    assert r'component\_failed' in report.markdown and 'component_failed' in caplog.text
+    assert secret not in report.markdown + caplog.text + json.dumps(saved)
+    assert report.notification_status == 'disabled'
+    assert '1.100000' in report.markdown
+
+
+def test_untrusted_diagnostic_details_are_removed_before_snapshot_render_and_log(tmp_path, caplog):
+    from src.services.fund_interpretation import FundInterpretation
+    caplog.set_level('INFO', logger='src.services.fund_analysis_service')
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    interpretation = FundInterpretation('model_failed', '失败，未采用模型结论。', diagnostics={
+        'stage': 'component', 'code': 'component_failed', 'raw_response': 'PRIVATE_RESPONSE',
+        'exception': 'SECRET_KEY', 'section': 'secret-section', 'fund_code': 'private-account',
+        'counts': {'response_bytes': 80, 'private-body': 123, 'text_chars': 'SECRET_VALUE'},
+    })
+    report = run_fund_analysis('001672', fetcher=fetcher, include_news=False,
+                               interpreter=Mock(return_value=interpretation), output_dir=tmp_path)
+    saved_text = open(report.snapshot_path, encoding='utf-8').read()
+    diag = json.loads(saved_text)['interpretation']['diagnostics']
+    assert diag == {'stage': 'component', 'code': 'component_failed', 'counts': {'response_bytes': 80}}
+    for marker in ('PRIVATE_RESPONSE', 'SECRET_KEY', 'secret-section', 'private-account', 'private-body', 'SECRET_VALUE'):
+        assert marker not in saved_text + report.markdown + caplog.text
+
+
+def test_search_initialization_exception_does_not_leak_credentials(tmp_path, caplog):
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    with patch('src.search_service.get_search_service', side_effect=RuntimeError('https://provider.test?api_key=PRIVATE_KEY')):
+        report = run_fund_analysis('001672', fetcher=fetcher, include_news=True, output_dir=tmp_path)
+    assert 'news_initialization_failed' in caplog.text
+    assert 'PRIVATE_KEY' not in caplog.text + report.markdown
+    assert not report.failed_codes
+
+
+def test_news_report_separates_weak_background_and_sanitizes_filter_counts(tmp_path, caplog):
+    from src.services.fund_news_service import FundNewsBundle, FundNewsCoverage, FundNewsItem
+    caplog.set_level('INFO', logger='src.services.fund_analysis_service')
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    item = FundNewsItem('industry', '建设银行推出多项措施支持先进制造业', 'https://www.36kr.com/newsflashes/example',
+                        '36氪', date(2026, 11, 6), 'fresh', datetime.now(timezone.utc),
+                        '仅宽泛行业关系，非基金事件', evidence_scope='weak_background', model_eligible=False)
+    coverage = FundNewsCoverage(status='ok', queries=1, accepted=1, fresh=1,
+                               reason_counts={'static_page': 1, 'weak_background': 1,
+                                              'SECRET_PRIVATE_TITLE': 1, 'related_event': 'PRIVATE_BODY'})
+    bundle = FundNewsBundle(items=[item], coverage={'industry': coverage})
+    with patch('src.services.fund_analysis_service.gather_fund_news', return_value=bundle):
+        report = run_fund_analysis('001672', fetcher=fetcher, search_service=Mock(), output_dir=tmp_path)
+    saved_text = open(report.snapshot_path, encoding='utf-8').read()
+    saved = json.loads(saved_text)
+    assert '以下仅为宽泛背景' in report.markdown
+    assert '不作为模型事件证据' in report.markdown
+    assert '静态行情或资料页 1条' in report.markdown
+    assert '未找到通过本基金身份匹配或已核验关联筛选的近期事件新闻' in report.markdown
+    assert saved['news_evidence']['001672']['items'][0]['model_eligible'] is False
+    assert saved['news_evidence']['001672']['coverage']['industry']['reason_counts'] == {'static_page': 1, 'weak_background': 1}
+    for secret in ('SECRET_PRIVATE_TITLE', 'PRIVATE_BODY'):
+        assert secret not in report.markdown + caplog.text + saved_text
+    assert item.title not in caplog.text
+
+
+def test_provider_response_validation_diagnostic_reaches_final_report_without_raw_body(tmp_path, caplog):
+    from functools import partial
+    from src.services.fund_interpretation import interpret_funds
+    from src.llm.generation_backend import GenerationResult
+    caplog.set_level('INFO', logger='src.services.fund_analysis_service')
+    fetcher = Mock()
+    fetcher.fetch.return_value = sample()
+    statement = {'text': '公开资料仍需审慎核验，不推断未经证实的结论。', 'evidence_ids': ['PRIVATE_UNKNOWN_CITATION']}
+    payload = {'funds': [{'fund_code': '001672', **{key: [statement] for key in ('conclusion', 'risks', 'evidence', 'observations')}}], 'comparison': []}
+    analyzer = Mock()
+    analyzer.get_generation_backend_identity.return_value = ('litellm', 'openai/test')
+    analyzer.is_available.return_value = True
+    analyzer.generate_text_with_metadata.return_value = GenerationResult(json.dumps(payload), 'test-model', 'openai', 'litellm', {})
+    config = SimpleNamespace(generation_backend='litellm', generation_fallback_backend='', litellm_model='openai/test',
+                             litellm_fallback_models=[], llm_model_list=[], openai_base_url='')
+    interpreter = partial(interpret_funds, config=config, analyzer_factory=lambda **kwargs: analyzer)
+    report = run_fund_analysis('001672', fetcher=fetcher, include_news=False, include_interpretation=True,
+                               interpreter=interpreter, output_dir=tmp_path)
+    saved_text = open(report.snapshot_path, encoding='utf-8').read()
+    saved = json.loads(saved_text)
+    diag = saved['interpretation']['diagnostics']
+    assert diag['stage'] == 'citation' and diag['code'] == 'citation_unknown'
+    assert diag['fund_code'] == '001672' and diag['section'] == 'conclusion'
+    assert diag['item_index'] == 0
+    assert saved['interpretation']['funds'] == {} and saved['interpretation']['comparison'] == []
+    assert r'citation\_unknown' in report.markdown and 'citation_unknown' in caplog.text
+    assert 'PRIVATE_UNKNOWN_CITATION' not in saved_text + report.markdown + caplog.text
+    assert '1.100000' in report.markdown
+    assert report.notification_status == 'disabled'
+    analyzer.generate_text_with_metadata.assert_called_once()

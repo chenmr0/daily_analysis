@@ -470,3 +470,148 @@ def test_duplicate_placeholders_and_cross_fund_citations_are_rejected():
     output = valid_output(("000001", "000002"))
     output["funds"][0]["risks"][0]["evidence_ids"] = ["F000002:quality"]
     assert interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output)).status == "model_failed"
+
+
+@pytest.mark.parametrize("raw,stage,code", [
+    ("", "response", "response_empty"),
+    ("x" * (module.MAX_OUTPUT_BYTES + 1), "response", "response_too_large"),
+    ("\ud800", "response", "response_encoding"),
+    ("```json\n{}\n```", "json", "json_invalid"),
+    ('{"funds":[],"funds":[],"comparison":[]}', "json", "json_duplicate_key"),
+    ('{"funds":NaN,"comparison":[]}', "json", "json_nonfinite"),
+    ("[" * 22000 + "]" * 22000, "json", "json_depth"),
+    ("{}", "schema", "root_schema"),
+    ('{"funds":[],"comparison":[]}', "schema", "fund_count"),
+])
+def test_safe_response_diagnostics_distinguish_failures_without_repair_or_retry(raw, stage, code):
+    calls = []
+    result = interpret_funds([analysis()], config=configuration(), analyzer_factory=fake_factory(raw, calls=calls))
+    assert result.status == "model_failed" and not result.funds and not result.comparison
+    assert result.diagnostics["stage"] == stage and result.diagnostics["code"] == code
+    assert result.diagnostics["counts"]["response_chars"] == len(raw)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("changes,stage,code", [
+    ({"text": 42}, "schema", "text_type"),
+    ({"text": "太短"}, "schema", "text_length"),
+    ({"evidence_ids": []}, "schema", "citations_size"),
+    ({"evidence_ids": ["SECRET_BAD_REFERENCE"]}, "citation", "citation_unknown"),
+    ({"evidence_ids": [["SECRET_BAD_REFERENCE"]]}, "citation", "citation_unknown"),
+    ({"evidence_ids": ["F000001:nav", "F000001:nav"]}, "citation", "citation_duplicate"),
+    ({"evidence_ids": ["F000002:nav"]}, "citation", "citation_wrong_fund"),
+    ({"text": "需要核对资料的适用时点：{{F000001:nav}}"}, "citation", "placeholder_uncited"),
+    ({"text": "本基金历史收益约为半成，后续仍需注意风险变化。"}, "narrative", "chinese_numeral"),
+    ({"text": "本基金区间收益为数倍，后续仍需注意风险变化。"}, "narrative", "quantity_word"),
+    ({"text": "本基金区间收益为20%，后续仍需注意风险变化。"}, "narrative", "numeric_or_symbolic"),
+    ({"text": "The fund needs careful interpretation."}, "narrative", "non_chinese"),
+    ({"text": "本基金历史表现\u200b仍需结合净值口径谨慎理解。"}, "narrative", "control_character"),
+    ({"text": "新闻推动净值上涨，后续表现仍然值得关注。"}, "narrative", "unsafe_claim"),
+    ({"text": "本基金当前持仓集中于科技公司，值得持续关注。"}, "narrative", "current_exposure"),
+    ({"text": "基金历史持仓集中于科技公司，应观察后续变化。"}, "narrative", "historical_evidence_missing"),
+])
+def test_statement_diagnostics_locate_validated_fund_section_and_index(changes, stage, code):
+    output = valid_output(("000001", "000002"))
+    # Fail after an earlier valid section, still discard the whole response.
+    output["funds"][0]["risks"].append(copy.deepcopy(output["funds"][0]["risks"][0]))
+    output["funds"][0]["risks"][1].update(changes)
+    result = interpret_funds([analysis(), analysis("000002")], config=configuration(),
+                             analyzer_factory=fake_factory(output))
+    diagnostic = result.diagnostics
+    assert result.status == "model_failed" and not result.funds and not result.comparison and result.facts
+    assert (diagnostic["stage"], diagnostic["code"]) == (stage, code)
+    assert diagnostic["fund_code"] == "000001" and diagnostic["fund_index"] == 0
+    assert diagnostic["section"] == "risks" and diagnostic["item_index"] == 1
+    assert diagnostic["counts"]["section_count"] == 2
+    assert "SECRET_BAD_REFERENCE" not in json.dumps(asdict(result))
+    assert diagnostic == module.safe_interpretation_diagnostics(diagnostic)
+
+
+def test_invalid_identity_never_echoes_model_identity_or_untrusted_exception(monkeypatch):
+    output = valid_output()
+    output["funds"][0]["fund_code"] = "SECRET_MODEL_IDENTITY"
+    result = run(output)
+    assert result.diagnostics["code"] == "fund_identity" and result.diagnostics["fund_index"] == 0
+    assert "fund_code" not in result.diagnostics
+    assert "SECRET_MODEL_IDENTITY" not in json.dumps(asdict(result))
+    monkeypatch.setattr(module, "_parse_response", Mock(side_effect=ValueError("SECRET_EXCEPTION_TEXT")))
+    result = run()
+    assert result.diagnostics == {"stage": "component", "code": "validation_internal"}
+    assert "SECRET_EXCEPTION_TEXT" not in json.dumps(asdict(result))
+
+
+def test_diagnostic_allowlist_rejects_unknown_strings_and_malformed_values():
+    assert module.safe_interpretation_diagnostics({"stage": "json", "code": "SECRET_EXCEPTION"}) == {}
+    assert module.safe_interpretation_diagnostics({"stage": [], "code": "json_invalid"}) == {}
+    value = {"stage": "json", "code": "json_invalid", "raw": "SECRET_MODEL_OUTPUT", "fund_code": "000001\nSECRET",
+             "section": ["SECRET_SECTION"], "item_index": True, "fund_index": -1,
+             "counts": {"response_chars": 10, "response_bytes": "SECRET", "text_chars": True,
+                        "raw": "SECRET", "json_line": -1, "json_column": 10**20}}
+    assert module.safe_interpretation_diagnostics(value) == {
+        "stage": "json", "code": "json_invalid", "counts": {"response_chars": 10},
+    }
+
+
+def test_config_and_generation_diagnostics_do_not_copy_provider_exception_text():
+    local = interpret_funds([analysis()], config=configuration(generation_backend="codex_cli"))
+    assert local.diagnostics == {"stage": "configuration", "code": "local_backend_prohibited"}
+    # A provider cannot spoof an internal diagnostic by using its name in an exception.
+    failed = interpret_funds([analysis()], config=configuration(),
+                             analyzer_factory=fake_factory(error=ValueError("json_invalid SECRET_PROVIDER_KEY")))
+    assert failed.diagnostics == {"stage": "generation", "code": "provider_failed"}
+    assert "SECRET_PROVIDER_KEY" not in json.dumps(asdict(failed))
+
+
+def test_prompt_contract_matches_strict_parser_and_has_no_pseudo_json():
+    calls = []
+    assert interpret_funds([analysis()], config=configuration(), analyzer_factory=fake_factory(calls=calls)).status == "ok"
+    prompt = calls[0][0]
+    assert "[同结构]" not in prompt
+    assert "必须恰有fund_code、conclusion、risks、evidence、observations" in prompt
+    assert "六位字符串（保留前导零）" in prompt and "C:证据" in prompt
+    assert "只能出现一次" in prompt and "否定句" in prompt and "单行" in prompt
+
+
+def test_semiconductor_term_is_not_a_fraction_but_embedded_quantities_still_fail():
+    output = valid_output()
+    output["funds"][0]["conclusion"][0]["text"] = "半导体产业景气仍存在不确定性，应关注相关业务与政策变化。"
+    assert run(output).status == "ok"
+    for quantity in ("半成", "百分之五", "半", "半导体半成", "半导体百分之五", "半 导体半成"):
+        output["funds"][0]["conclusion"][0]["text"] = f"半导体相关历史收益约为{quantity}，后续仍需注意风险变化。"
+        assert run(output).status == "model_failed"
+
+
+@pytest.mark.parametrize("extra", [
+    {"evidence_scope": "weak_background", "model_eligible": False},
+    {"evidence_scope": "weak_background"}, {"evidence_scope": "unknown"}, {"evidence_scope": []},
+    {"evidence_scope": "fund_event", "model_eligible": False},
+])
+def test_ineligible_news_titles_do_not_enter_model_context(extra):
+    news = {"000001": {"items": [{"title": "EXCLUDED_WEAK_BACKGROUND_TITLE", "date_status": "fresh", **extra}]}}
+    calls = []
+    result = interpret_funds([analysis()], news, config=configuration(), analyzer_factory=fake_factory(calls=calls))
+    assert result.status == "ok" and "EXCLUDED_WEAK_BACKGROUND_TITLE" not in calls[0][0]
+    assert not any(f.kind == "news_lead" for f in result.facts.values())
+
+
+def test_representative_six_fund_response_keeps_history_missing_currency_and_news_boundaries():
+    # Synthetic response shaped like the six-fund workflow, not a recovered run #4 output.
+    codes = ("021190", "018123", "020356", "001672", "025500", "024480")
+    analyses = [analysis(code, currency=None, qdii=index == 0, holdings=True) for index, code in enumerate(codes)]
+    news = {code: {"items": [{"title": "半导体行业公开资料待独立核验", "date_status": "fresh",
+                             "evidence_scope": "sector_context", "model_eligible": True}]} for code in codes}
+    output, calls = valid_output(codes), []
+    for item in output["funds"]:
+        code = item["fund_code"]
+        item["conclusion"] = [{"text": "已披露历史持仓仅为报告期快照，不能推断当前完整持仓。",
+                               "evidence_ids": [f"F{code}:holdings"]}]
+        item["observations"] = [{"text": "半导体行业新闻仍属待核实线索，应独立核对其与基金的关联依据。",
+                                 "evidence_ids": [f"F{code}:news:0"]}]
+    result = interpret_funds(analyses, news, config=configuration(), analyzer_factory=fake_factory(output, calls=calls))
+    assert result.status == "ok" and len(result.funds) == 6 and result.diagnostics == {}
+    assert len(calls) == 1 and not result.comparison_context["metrics"]["return_1m"]["eligible"]
+    output["comparison"] = [{"text": "同口径事实可分别核对：{{F021190:return_1m}}；{{F018123:return_1m}}",
+                             "evidence_ids": ["F021190:return_1m", "F018123:return_1m", "C:return_1m"]}]
+    failed = interpret_funds(analyses, news, config=configuration(), analyzer_factory=fake_factory(output))
+    assert failed.diagnostics["code"] == "metric_unaligned" and failed.diagnostics["section"] == "comparison"
+    assert not failed.funds and not failed.comparison

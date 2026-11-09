@@ -13,8 +13,10 @@ from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from src.core.fund_analysis import FundAnalysis, analyze_fund, parse_fund_codes
-from src.services.fund_interpretation import FundInterpretation, interpret_funds
-from src.services.fund_news_service import FundNewsBundle, gather_fund_news
+from src.services.fund_interpretation import (
+    FundInterpretation, interpret_funds, safe_interpretation_diagnostics,
+)
+from src.services.fund_news_service import FundNewsBundle, REASON_LABELS, gather_fund_news
 
 logger = logging.getLogger(__name__)
 
@@ -62,20 +64,41 @@ DATE_LABELS = {"fresh": "日期在本次新闻窗口内", "stale": "已过时效
 INSIGHT_LABELS = {"conclusion": "核心结论", "risks": "风险提示", "evidence": "证据", "observations": "后续观察"}
 
 
+def _news_reason_counts(coverage) -> dict[str, int]:
+    """Project only fixed outcome codes and bounded counts into diagnostics."""
+    values = getattr(coverage, "reason_counts", {})
+    if not isinstance(values, dict):
+        return {}
+    return {key: values[key] for key in REASON_LABELS
+            if type(values.get(key)) is int and 0 <= values[key] <= 100}
+
+
 def _news_lines(bundle: FundNewsBundle) -> List[str]:
-    lines = []
+    lines, backgrounds = [], []
     for item in bundle.items:
-        lines.append(
-            f"【{NEWS_LABELS.get(item.category, '相关线索')}】{_link(item.title, item.url)}；"
+        scope = getattr(item, "evidence_scope", "weak_background")
+        label = {"fund_event": "基金事件线索", "related_event": "关联对象事件线索",
+                 "sector_context": "具体行业/主题背景", "weak_background": "宽泛行业弱背景"}.get(scope, "未分类线索")
+        eligibility = ("可作为待核验线索，不代表事件已证实" if item.model_eligible is True
+                       else "不作为模型事件证据")
+        line = (
+            f"【{NEWS_LABELS.get(item.category, '相关线索')} / {label}】{_link(item.title, item.url)}；"
             f"来源：{_text(item.source)}；发布日期：{item.published_date or '未提供'}；"
-            f"{DATE_LABELS.get(item.date_status, '日期未核验')}；关联依据：{_text(item.relation_basis)}"
+            f"{DATE_LABELS.get(item.date_status, '日期未核验')}；{eligibility}；关联依据：{_text(item.relation_basis)}"
             + (f"；{_link('关联资料来源', item.source_url)}。" if item.source_url else "。")
         )
+        (backgrounds if scope == "weak_background" else lines).append(line)
     if not lines:
-        lines.append("未找到通过本基金身份匹配或已核验关联筛选的近期新闻；不代表没有相关事件。")
+        lines.append("未找到通过本基金身份匹配或已核验关联筛选的近期事件新闻；不代表没有相关事件。")
+    if backgrounds:
+        lines.append("以下仅为宽泛背景，与本基金具体事件关联不足，不纳入模型事件证据：")
+        lines.extend(backgrounds)
     for category, coverage in bundle.coverage.items():
         if coverage.queries or coverage.status in {"not_configured", "no_identity", "timeout", "unavailable", "skipped_budget"}:
             lines.append(f"{NEWS_LABELS.get(category, category)}检索覆盖：{_text(coverage.detail or coverage.status)}")
+        counts = _news_reason_counts(coverage)
+        if counts:
+            lines.append(f"{NEWS_LABELS.get(category, category)}筛选统计：" + "；".join(f"{REASON_LABELS[key]} {value}条" for key, value in counts.items()))
     lines.extend(_text(warning) for warning in bundle.warnings)
     return list(dict.fromkeys(lines))
 
@@ -119,6 +142,11 @@ def _overview(analyses, interpretation: Optional[FundInterpretation]) -> List[st
                   f"状态：{_text(interpretation.status)}；{_text(interpretation.reason)}", ""])
     if interpretation.model or interpretation.provider:
         lines.extend([f"实际模型：{_text(interpretation.model or '未返回')}；供应方：{_text(interpretation.provider or '未返回')}；后端：{_text(interpretation.backend or '未返回')}。", ""])
+    diagnostic = safe_interpretation_diagnostics(interpretation.diagnostics)
+    if diagnostic:
+        fields = [f"{key}={value}" for key, value in diagnostic.items() if key != "counts"]
+        fields.extend(f"{key}={value}" for key, value in diagnostic.get("counts", {}).items())
+        lines.extend(["安全诊断（仅固定代码、位置与计数；索引从0起）：" + _text("；".join(fields)) + "。", ""])
     if interpretation.status == "ok":
         lines.extend(_statement_line(statement, interpretation) for statement in interpretation.comparison)
         lines.append("")
@@ -237,8 +265,8 @@ def run_fund_analysis(
         try:
             from src.search_service import get_search_service
             search_service = get_search_service()
-        except Exception as exc:
-            logger.warning("[基金] 新闻服务不可用: %s", exc)
+        except Exception:
+            logger.warning("[基金] 新闻服务不可用: news_initialization_failed")
     generated_at = datetime.now(timezone.utc)
     end_day = as_of or generated_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
     analyses, failed, news, news_evidence = [], {}, {}, {}
@@ -255,10 +283,15 @@ def run_fund_analysis(
             elif include_news:
                 try:
                     bundle = gather_fund_news(analysis.data, search_service, as_of=end_day)
+                    for category, coverage in bundle.coverage.items():
+                        coverage.reason_counts = _news_reason_counts(coverage)
+                        if category in NEWS_LABELS and coverage.reason_counts:
+                            logger.info("[基金] %s 新闻筛选安全诊断 %s: %s", code, category,
+                                        json.dumps(coverage.reason_counts, sort_keys=True))
                     news_evidence[code] = asdict(bundle)
                     news[code] = _news_lines(bundle)
-                except Exception as exc:
-                    logger.warning("[基金] 新闻组件异常，保留净值: %s", type(exc).__name__)
+                except Exception:
+                    logger.warning("[基金] 新闻组件异常，保留净值: news_component_failed")
                     news[code] = ["新闻组件不可用；未核验近期事件，不影响净值数据。"]
                     news_evidence[code] = {"items": [], "coverage": {}, "warnings": news[code]}
             else:
@@ -274,9 +307,14 @@ def run_fund_analysis(
             raise TypeError("Invalid interpretation contract")
         if historical and include_interpretation:
             interpretation.reason = "历史截止日不混入当前资料和新闻形成AI判断；仅展示程序数据。"
-    except Exception as exc:
-        logger.warning("[基金] 解读组件异常，保留数据报告: %s", type(exc).__name__)
-        interpretation = FundInterpretation("model_failed", "解读组件不可用，保留程序数据与来源；未采用模型结论。")
+    except Exception:
+        interpretation = FundInterpretation(
+            "model_failed", "解读组件不可用，保留程序数据与来源；未采用模型结论。",
+            diagnostics={"stage": "component", "code": "component_failed"},
+        )
+    interpretation.diagnostics = safe_interpretation_diagnostics(interpretation.diagnostics)
+    if interpretation.diagnostics:
+        logger.info("[基金] 模型解读安全诊断: %s", json.dumps(interpretation.diagnostics, ensure_ascii=True, sort_keys=True))
     report = FundReport(render_fund_report(analyses, failed, news, generated_at, interpretation),
                         analyses, failed, interpretation_status=interpretation.status, interpretation=interpretation)
     directory = Path(output_dir) if output_dir is not None else Path(__file__).resolve().parents[2] / "reports"
