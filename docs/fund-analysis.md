@@ -142,6 +142,25 @@ JSON新闻追加 `evidence_scope` 和 `model_eligible`：`fund_event` 是本基�
 
 Run8 的018123与025500只留存了 `conclusion[0]` 的 `unsafe_claim`、字符数与引用数量，失败原句和具体引用ID不可用，不能确定是误拒，也不能推断命中类别。本次使用这两只基金的实际公开来源输入投影及明确标记的合成文本进行离线回归，非真实模型输出重放；未调用模型、搜索或SMTP，未触发Actions。
 
+### 行业数词与历史分句诊断
+
+`批发和零售业` 是本次唯一新增的完整非数量行业术语，不泛化豁免“零”或任意来源名称。程序仅在已校验行业资料的原始结构化 `asset.name` 精确等于该术语时建立内部许可；必须实际引用该条 `dated_allocation`，日期合法且覆盖该句每只引用基金。其他行业、股票持仓、ETF关系、净值资料、来源备注或伪造展示格式都不能提供该许可。内部许可不写入模型事实、提示词载荷或JSON；仅从JSON重新加载的普通事实映射无此许可，须由原始结构化输入重建，缺失时保守拒绝。
+
+术语只在数词检查视图中按原位置掩码，先于其他非数量词处理；`批发和一并零售业`、用事实占位符拆开术语、术语旁附加数字/比例都不能借此通过。实际文字仍经过全部引用、数量词、Unicode双视图、禁止表达、历史/当前性、主题、方向、新闻及比较门控。来源里出现其他含数词的公司或行业名称不会生成新的许可。检查不是行业事实语义认证，不能保证其他自由定性判断与原资料一致。
+
+历史限定仍不得跨分句或占位符借用。ASCII点号也作为分句边界，因此全角点号和NFKC后成为点号的省略号同样分隔；原有中文标点规则保留。该规则只检查占位符之外的自由文字，不拆开事实ID，也不改变程序展开的日期、小数或报告内容。泛化语句如“投资者应关注持仓风险，并结合资料评估不确定性”仍可能保守拒绝；本次未增加通用风险语义解析或新的风险整句模板。可独立使用被引事实已许可的“应核验持仓资料的适用时点”，或用“可核对程序提供的历史资料：{{证据ID}}”呈现原始依据。其他普通含数词词语，如“一方面”“一贯”，仍可能被拒。
+
+主错误码保持兼容，仅增加可选安全诊断：
+
+- `detection_view`：`joined`（移除占位符的连续文字）或 `boundary`（占位符作为分句边界）；仅在这两次自由文字检查中产生。
+- `chinese_numeral` 的 `guard_reason=unapproved_numeral`，只表示仍有未获许可的中文数词字符，不区分真实数量或未支持的普通词语。
+- `historical_evidence_missing` 的 `guard_reason`：`target_not_snapshot`、`topic_unspecified`、`dated_fact_missing`、`historical_marker_missing`，依次对应目标关系不是配置快照、主题不明确、缺少同范围同主题有效日期事实、该分句没有历史限定。
+- 同错误可附 `exposure_topic=target/unspecified/holdings/allocation/mixed`、从零开始且不超过600的 `clause_index`；仅 `dated_fact_missing` 可附 `missing_fact_kind=dated_holdings/dated_allocation/both`。分句索引包含连续分隔符形成的空段，不是原文字符偏移。
+
+这些字段穿过错误包装、单基金/横向范围、最终JSON、Markdown及日志的白名单清洗；不保存原句、命中词、未知引用ID或异常内容。仍只报告各范围首个阻断，不说明后续检查已通过，旧记录不补猜新字段。schema 4、操作参考卡片、五个既有完整风险模板、缺失短句、逐基金隔离与所有事实门控保持不变。
+
+Run9 的001672与025500只保留 `evidence[0]` 的 `historical_evidence_missing` / `chinese_numeral` 以及安全计数；失败原句及实际引用ID不可用，无法确定真实原因或证明这两条失败已经解决。本次回归使用真实公开输入最小投影、真实留存的018123已接受渲染结果及明确标记的合成案例。025500的实际资料包含该完整行业名称，不能据此推断它的失败原句使用了此词。没有重放真实模型输出，也未调用模型、新闻、SMTP或Actions。
+
 横向表只并列净值日期与真实指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
 
 状态 `ok/partial/disabled/unavailable/model_failed` 均有原因：`ok` 表示全部单基金及必需横向观察通过；`partial` 表示至少一只基金通过，但其他基金或横向观察被拒绝；没有可采用的单基金观点时为 `model_failed`。`fund_statuses` 为每只进入模型输入的基金保存 `status/reason/diagnostics`，数据抓取失败仍单列于 `failed_codes`；`comparison_status` 同样记录横向状态，单基金正常响应为 `not_applicable`。关闭、不可用或整批失败时各范围也显式记录原因。报告显示整体、各基金及横向状态，部分成功时仅显示通过的模型结论，不再声称全部结论均不可用。
@@ -189,3 +208,11 @@ Dated holdings cannot substitute for dated industry allocation, or vice versa. M
 Target-ETF identity facts do not support free-prose ETF exposure/weight claims and cannot borrow dates from stock holdings or industry allocations. Use full program fact slots for known relationship data. Both joined and boundary views of placeholders are checked: slots cannot split unsafe words/currentness or manufacture permitted absence clauses.
 
 The unsafe-claim guard now permits only five exact, program-owned whole-text risk disclaimers supported by the cited fact kinds for every referenced fund. Available numeric metrics support historical-performance disclaimers; unavailable metrics do not. Dated holdings/allocation or verified target relationships support the source-association disclaimer, while news requires the separate qualified “lead” template. No prefix, suffix, additional clause or placeholder is allowed. NFKC and visible-space normalization are retained. Unicode categories C, M and Zl/Zp are rejected in both the original and NFKC-normalized views as control_character, preventing combining marks/variation selectors from splitting forbidden tokens or line separators from being compacted into a template; all other validation remains checked. Unsupported safe synonyms may still fail closed. `unsafe_claim` adds the optional finite `claim_category` enum within the preserved interpretation contract; it reports a lexical match category, not a semantic conviction. Run8's two rejected texts and citation IDs were not retained, so their exact causes cannot be reconstructed. The new fixture preserves public Run8 inputs and old safe diagnostics; all new model narratives are explicitly synthetic offline examples.
+
+The Run9 guard repair adds exactly one bounded non-quantitative industry term, `批发和零售业` (wholesale and retail). Permission is registered only when the validated structured industry `asset.name` equals that entire fixed term. The statement must cite that actual dated-allocation fact for every referenced fund; another industry, holdings, ETF identity, NAV, source notes, or forged display-format text cannot grant permission. Private permission metadata is not a fact, prompt-payload, or JSON field. Plain deserialized fact mappings fail closed unless rebuilt from the original structured inputs. The term is masked in place before existing lexical stripping, only in the numeral-detection view. Spliced words, placeholders, extra numerals, proportions and Unicode concealment still fail; all downstream fact/citation/currentness/topic/claim/direction/news/comparison gates remain active. This does not certify arbitrary narrative claims against the underlying source.
+
+ASCII periods now end exposure clauses, including fullwidth periods and ellipses after NFKC normalization. Historical qualifiers cannot leak into the next sentence. This operates only on free prose, not program-rendered decimals/dates or placeholder IDs. Generic exposure-risk statements and unsupported ordinary numeral-containing words such as “一方面” and “一贯” remain conservatively rejected. No general negation exception or new risk template is added. The prompt offers existing supported limitation clauses or a neutral introduction followed by a complete fact placeholder instead.
+
+Optional safe diagnostics preserve the original primary codes: `detection_view=joined/boundary`; `guard_reason=unapproved_numeral` for `chinese_numeral`; and `target_not_snapshot/topic_unspecified/dated_fact_missing/historical_marker_missing` for `historical_evidence_missing`. The latter may include `exposure_topic=target/unspecified/holdings/allocation/mixed`, bounded zero-based `clause_index`, and, only for missing dated facts, `missing_fact_kind=dated_holdings/dated_allocation/both`. Clause indices include empty segments from consecutive delimiters. Finite typed allowlists cover rewrapping, per-fund and comparison isolation, Markdown, JSON and logs. No original text, matched word, unknown reference ID or exception is retained; old diagnostics are not enriched by guessing. Schema 4, action references, all five existing complete risk templates, missing-data clauses and first-failure reporting are unchanged.
+
+Run9 did not retain the rejected 001672/025500 text or actual citation IDs. Their real causes cannot be reconstructed or claimed resolved. The fixture projects real public inputs, retains real accepted 018123 rendered statements, and explicitly labels new narratives as synthetic. Inverse fact substitution creates derived validation examples, not recovered model output. The observed retail industry name motivates a reproducible defect case but does not prove that name appeared in the rejected sentence. Validation is offline only, with no model, news, SMTP or Actions calls.

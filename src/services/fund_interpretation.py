@@ -67,6 +67,17 @@ class EvidenceFact:
     allowed_limitations: list[str] = field(default_factory=list)
 
 
+class _EvidenceFacts(dict):
+    """Fact mapping with private lexical permissions, never serialized as facts.
+
+    Only _build_context registers exact structured industry names. Ordinary
+    mappings (including deserialized snapshots) have no lexical permissions.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.industry_term_refs: dict[str, set[str]] = {}
+
+
 @dataclass(frozen=True)
 class Statement:
     # Placeholders are resolved before this object reaches the report renderer.
@@ -121,6 +132,14 @@ _DIAGNOSTIC_CODES = {
     "comparison": {"metric_unaligned", "citation_invalid_fund", "identity_unbound"},
     "component": {"component_failed", "validation_internal"},
 }
+# Optional details are code-specific finite enums, never matched text/IDs.
+_NARRATIVE_REASONS = {
+    "chinese_numeral": {"unapproved_numeral"},
+    "historical_evidence_missing": {
+        "target_not_snapshot", "topic_unspecified", "dated_fact_missing", "historical_marker_missing",
+    },
+}
+_EXPOSURE_TOPICS = {"holdings", "allocation", "mixed", "unspecified", "target"}
 _DIAGNOSTIC_COUNTS = {
     "response_chars", "response_bytes", "text_chars", "citation_count", "placeholder_count",
     "section_count", "fund_count", "json_line", "json_column", "prompt_bytes",
@@ -146,6 +165,24 @@ def safe_interpretation_diagnostics(value: object) -> dict[str, Any]:
     if (stage == "narrative" and code == "unsafe_claim" and isinstance(category, str)
             and category in _UNSAFE_CLAIM_PATTERNS):
         result["claim_category"] = category
+    if stage == "narrative":
+        view = value.get("detection_view")
+        if isinstance(view, str) and view in {"joined", "boundary"}:
+            result["detection_view"] = view
+        reason = value.get("guard_reason")
+        if isinstance(reason, str) and reason in _NARRATIVE_REASONS.get(code, ()):
+            result["guard_reason"] = reason
+        if code == "historical_evidence_missing":
+            topic = value.get("exposure_topic")
+            if isinstance(topic, str) and topic in _EXPOSURE_TOPICS:
+                result["exposure_topic"] = topic
+            missing = value.get("missing_fact_kind")
+            if (reason == "dated_fact_missing" and isinstance(missing, str)
+                    and missing in {"dated_holdings", "dated_allocation", "both"}):
+                result["missing_fact_kind"] = missing
+            index = value.get("clause_index")
+            if type(index) is int and 0 <= index <= 600:
+                result["clause_index"] = index
     section = value.get("section")
     if isinstance(section, str) and section in {*_SECTIONS, "comparison"}:
         result["section"] = section
@@ -252,7 +289,7 @@ _RISK_STATEMENTS = {
 
 
 def _build_context(analyses, news):
-    facts: dict[str, EvidenceFact] = {}
+    facts = _EvidenceFacts()
     comparison = build_comparison_context(analyses)
 
     def fact(fid, codes, kind, text, url="", day=None, limitations=()):
@@ -317,6 +354,8 @@ def _build_context(analyses, news):
                  "dated_allocation" if asset.category == "industry" else "target_relationship",
                  text, asset.source_url, asset.source_date,
                  ("目标ETF配置比例未提供",) if asset.category == "target_etf" and asset.weight_pct is None else ())
+            if asset.category == "industry" and asset.name in _INDUSTRY_NUMERAL_TERMS:
+                facts.industry_term_refs.setdefault(asset.name, set()).add(prefix + f":related:{len(verified_assets) - 1}")
         if not any(asset.category == "industry" for asset in verified_assets):
             fact(prefix + ":allocation", [code], "missing_allocation",
                  "本次输入没有可用的带报告期行业配置资料；不代表没有行业投资，也不表示配置比例为零。",
@@ -388,6 +427,9 @@ fund_code必须是输入的完整六位字符串（保留前导零）。其余�
 不将不同日期、实际区间或未知币种指标比较，不使用高于、低于、领先等排名措辞。单基金comparison为空。
 只用中文自由叙述，缩写仅可用ETF、QDII、NAV；外文名称、比例和日期放入证据占位符。禁止半成、分之等隐含量化形式。
 每个持仓或配置断言必须在同一分句标为历史、已披露、报告期或快照，并引用有日期的对应资料。
+泛化持仓风险措辞也可能被保守拒绝；可改为独立的“应核验持仓资料的适用时点”并引用提供此allowed_limitations的事实。
+历史限定与主题须写在同一段连续自由文字中，不用占位符或标点隔开；资料说明可用“可核对程序提供的历史资料：{{证据ID}}”。
+“批发和零售业”只在同条引用本基金有日期的该行业资料时按完整非数量术语识别；其他含数字的来源名称放入完整事实占位符。
 股票持仓主题须引用dated_holdings，行业配置主题须引用dated_allocation；同句兼含两种主题须同时支持，不可互相替代。
 目标ETF关系只证明身份，不支持自由文字的ETF配置、权重或敞口断言；不能借股票或行业资料的报告期背书。相关已知资料仅用完整事实占位符呈现。
 敞口、集中度、权重等模糊措辞须明确属于股票持仓还是行业配置；不能只说历史敞口而不明确主题。
@@ -424,6 +466,10 @@ _UNSAFE_CLAIM = re.compile("|".join(
     f"(?P<{category}>{pattern})" for category, pattern in _UNSAFE_CLAIM_PATTERNS.items()
 ), re.IGNORECASE)
 _NON_QUANTITATIVE_TERMS = re.compile("进一步|不一致|一致|一般|单一|统一|同一|一旦|一并|一概|半导体")
+# A single fixed industry label, not a source-derived/dynamic word allowlist.
+# _build_context grants permission only from the exact structured asset name,
+# never by parsing a display string that untrusted names could imitate.
+_INDUSTRY_NUMERAL_TERMS = {"批发和零售业"}
 _CHINESE_NUMERALS = re.compile("[零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟萬億兆半幺廿卅卌]")
 _QUANTITY_WORDS = re.compile(r"分之|百分点|百分比|百分率|千分率|基点|成数|成倍|倍数|数倍|翻倍|翻番|腰斩|[几数多满][成分厘倍折]|\d")
 _ACRONYMS = re.compile(r"(?<![A-Za-z])(?:ETF|QDII|NAV)(?![A-Za-z])")
@@ -437,7 +483,7 @@ _EXPOSURE_LIMITATION_MARKERS = re.compile(
     r"缺失|缺少|未提供|未取得|未获得|未覆盖|未披露|不可用|不明|未知|空仓|"
     r"无法|不能|尚未|未能|不宜|不足以|不代表|不等于|未核实|未核验|没有|不持有|未持有|未配置|为空|为无|清仓"
 )
-_CLAUSE_SPLIT = re.compile(r"[，。；！？,;!?：:（）()、]|但是|但|然而|不过|并且|同时|且")
+_CLAUSE_SPLIT = re.compile(r"[，。；！？.,;!?：:（）()、]|但是|但|然而|不过|并且|同时|且")
 
 
 def _supports_limitation(clause, refs, facts):
@@ -475,6 +521,21 @@ def _dated_scopes(refs, facts, kind):
     return scopes
 
 
+def _numeral_check_view(compact, refs, facts):
+    scopes = {code for ref in refs for code in facts[ref].fund_codes}
+    permissions = facts.industry_term_refs if isinstance(facts, _EvidenceFacts) else {}
+    for term in _INDUSTRY_NUMERAL_TERMS:
+        if term not in compact:
+            continue
+        supported = {code for ref in refs if ref in permissions.get(term, ())
+                     for code in _dated_scopes([ref], facts, "dated_allocation")}
+        if scopes and scopes <= supported:
+            # Mask before ordinary lexical stripping: neither removed words nor
+            # slots may manufacture the approved term. Preserve token boundaries.
+            compact = compact.replace(term, " " * len(term))
+    return _NON_QUANTITATIVE_TERMS.sub("", compact)
+
+
 def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -> str:
     """Check an intentionally narrow language surface; never certify meaning."""
     prose = unicodedata.normalize("NFKC", text)
@@ -492,10 +553,12 @@ def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -
         if category.startswith("L") and not unicodedata.name(char, "").startswith("CJK UNIFIED IDEOGRAPH"):
             raise _ValidationError("narrative", "non_chinese")
     # Match complete non-quantitative terms only, never exempt a numeral itself.
-    quantities = _NON_QUANTITATIVE_TERMS.sub("", compact)
+    quantities = _numeral_check_view(compact, refs, facts)
     if _CHINESE_NUMERALS.search(quantities):
-        raise _ValidationError("narrative", "chinese_numeral")
-    if _QUANTITY_WORDS.search(quantities):
+        raise _ValidationError("narrative", "chinese_numeral", guard_reason="unapproved_numeral")
+    # Preserve the previous quantity-word view; an industry mask cannot hide a
+    # proportional expression or create permission beyond the fixed name itself.
+    if _QUANTITY_WORDS.search(_NON_QUANTITATIVE_TERMS.sub("", compact)):
         raise _ValidationError("narrative", "quantity_word")
     if any(mark in compact for mark in ("{{", "}}", "%", "http://", "https://")):
         raise _ValidationError("narrative", "forbidden_prose_marker")
@@ -504,7 +567,7 @@ def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -
         raise _ValidationError("narrative", "unsafe_claim", claim_category=unsafe.lastgroup)
     scopes = {code for ref in refs for code in facts[ref].fund_codes}
     dated_scopes = {kind: _dated_scopes(refs, facts, kind) for kind in ("dated_holdings", "dated_allocation")}
-    for clause in _CLAUSE_SPLIT.split(compact):
+    for clause_index, clause in enumerate(_CLAUSE_SPLIT.split(compact)):
         if not _EXPOSURE.search(clause):
             continue
         if _supports_limitation(clause, refs, facts):
@@ -516,7 +579,9 @@ def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -
         # Target-ETF identity/weight is not a dated allocation snapshot in
         # this model. Neither stocks nor industry data can lend it a date.
         if "ETF" in clause or "目标基金" in clause or "联接标的" in clause:
-            raise _ValidationError("narrative", "historical_evidence_missing")
+            raise _ValidationError("narrative", "historical_evidence_missing",
+                                   guard_reason="target_not_snapshot", exposure_topic="target",
+                                   clause_index=clause_index)
         # Stocks/holdings and industry/allocation are different evidence
         # domains. Mixed clauses need both; unspecified exposure is not guessed.
         required = set()
@@ -524,9 +589,20 @@ def _guard_chinese_prose(text: str, refs, facts, *, allow_risk_statement=True) -
             required.add("dated_holdings")
         if re.search(r"配置|行业|板块|产业|主题", clause):
             required.add("dated_allocation")
-        if (not required or any(not scopes <= dated_scopes[kind] for kind in required)
-                or not _HISTORICAL_EXPOSURE.search(clause)):
-            raise _ValidationError("narrative", "historical_evidence_missing")
+        topic = ("mixed" if len(required) == 2 else "holdings" if "dated_holdings" in required
+                 else "allocation" if required else "unspecified")
+        details = {"exposure_topic": topic, "clause_index": clause_index}
+        if not required:
+            raise _ValidationError("narrative", "historical_evidence_missing",
+                                   guard_reason="topic_unspecified", **details)
+        missing = required - {kind for kind in required if scopes <= dated_scopes[kind]}
+        if missing:
+            raise _ValidationError("narrative", "historical_evidence_missing",
+                                   guard_reason="dated_fact_missing",
+                                   missing_fact_kind="both" if len(missing) == 2 else next(iter(missing)), **details)
+        if not _HISTORICAL_EXPOSURE.search(clause):
+            raise _ValidationError("narrative", "historical_evidence_missing",
+                                   guard_reason="historical_marker_missing", **details)
     # All downstream lexical checks must use the same normalized view (news
     # qualifiers, return direction and fund identity); rendered text is unchanged.
     return compact
@@ -641,13 +717,16 @@ def _parse_response(text, analyses, facts, comparison):
                 # boundary view so they cannot glue a permitted limitation.
                 # A risk template must exist intact in the original text: slots
                 # must never manufacture an exemption in either view.
+                detection_view = "joined"
                 free_text = _guard_chinese_prose(
                     _PLACEHOLDER.sub("", narrative), refs, facts, allow_risk_statement=not placeholders)
+                detection_view = "boundary"
                 _guard_chinese_prose(
                     _PLACEHOLDER.sub("；", narrative), refs, facts, allow_risk_statement=not placeholders)
             except _ValidationError as exc:
+                details = {key: value for key, value in exc.diagnostics.items() if key not in {"stage", "code"}}
                 invalid(exc.diagnostics["stage"], exc.diagnostics["code"],
-                        claim_category=exc.diagnostics.get("claim_category"))
+                        detection_view=detection_view, **details)
             if any(facts[ref].kind == "news_lead" for ref in refs) and not re.search("待核实|待核验|线索", free_text):
                 invalid("narrative", "news_not_qualified")
             returns = [a.metrics[ref.split(":", 1)[1]].value for a in analyses for ref in refs

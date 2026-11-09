@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 基金AI仅凭原始结构化、同基金同主题带日期行业资料识别完整“批发和零售业”非数量术语，封堵点号分句借用历史限定，增加有限脱敏检测视图与历史证据分支诊断；保留schema 4、事实/当前性/数量/比较门控与逐基金隔离，Run9缺失原文不反推实际原因。（Fund AI: narrowly bind the fixed retail-industry term to structured dated evidence, close period-boundary history leakage, and add safe finite diagnostic details without weakening existing gates.）
+
 - [改进] 基金日报首屏增加独立程序操作参考，区分观望与证据不足无法判断，分别说明已持有/未持有情形、实际证据日期和后续核验条件；历史涨跌不映射买卖，AI守门/股票/通知行为不变，JSON追加action_references并升至schema 4。
 
 - [修复] 基金AI保留禁止词守门，仅凭对应程序事实接受完整固定风险免责声明，禁止占位符拼接和否定前缀豁免，拒绝组合标记/行段分隔符隐藏禁词；`unsafe_claim` 增加脱敏有限类别，原有逐基金 partial 与比较隔离不变，Run8原文缺失不反推失败原因。
