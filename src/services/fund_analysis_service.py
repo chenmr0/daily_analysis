@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from src.core.fund_analysis import FundAnalysis, analyze_fund, parse_fund_codes
 from src.services.fund_interpretation import (
-    FundInterpretation, interpret_funds, safe_interpretation_diagnostics,
+    FundInterpretation, InterpretationScopeStatus, interpret_funds, safe_interpretation_diagnostics,
 )
 from src.services.fund_news_service import FundNewsBundle, REASON_LABELS, gather_fund_news
 
@@ -119,6 +119,15 @@ def _statement_line(statement, interpretation: FundInterpretation) -> str:
     return f"- {_text(statement.text)}" + ("（证据：" + "；".join(citations) + "）" if citations else "")
 
 
+def _diagnostic_lines(diagnostics) -> List[str]:
+    diagnostic = safe_interpretation_diagnostics(diagnostics)
+    if not diagnostic:
+        return []
+    fields = [f"{key}={value}" for key, value in diagnostic.items() if key != "counts"]
+    fields.extend(f"{key}={value}" for key, value in diagnostic.get("counts", {}).items())
+    return ["安全诊断（仅固定代码、位置与计数；索引从0起）：" + _text("；".join(fields)) + "。", ""]
+
+
 def _overview(analyses, interpretation: Optional[FundInterpretation]) -> List[str]:
     lines = ["## 横向数据对照（程序计算，不作排名）", "",
              "各列以各基金已披露日期和实际计算区间为准；日期、币种、区间未对齐时只作并列展示，不能解释为优劣排名。", "",
@@ -142,15 +151,16 @@ def _overview(analyses, interpretation: Optional[FundInterpretation]) -> List[st
                   f"状态：{_text(interpretation.status)}；{_text(interpretation.reason)}", ""])
     if interpretation.model or interpretation.provider:
         lines.extend([f"实际模型：{_text(interpretation.model or '未返回')}；供应方：{_text(interpretation.provider or '未返回')}；后端：{_text(interpretation.backend or '未返回')}。", ""])
-    diagnostic = safe_interpretation_diagnostics(interpretation.diagnostics)
-    if diagnostic:
-        fields = [f"{key}={value}" for key, value in diagnostic.items() if key != "counts"]
-        fields.extend(f"{key}={value}" for key, value in diagnostic.get("counts", {}).items())
-        lines.extend(["安全诊断（仅固定代码、位置与计数；索引从0起）：" + _text("；".join(fields)) + "。", ""])
-    if interpretation.status == "ok":
+    lines.extend(_diagnostic_lines(interpretation.diagnostics))
+    comparison_status = interpretation.comparison_status
+    lines.extend([f"横向观察状态：{_text(comparison_status.status)}；{_text(comparison_status.reason)}", ""])
+    lines.extend(_diagnostic_lines(comparison_status.diagnostics))
+    if interpretation.status in {"ok", "partial"} and comparison_status.status == "ok":
         lines.extend(_statement_line(statement, interpretation) for statement in interpretation.comparison)
         lines.append("")
-    else:
+    if interpretation.status == "partial":
+        lines.extend(["部分AI解读通过校验；仅展示通过的基金观点及横向观察，失败部分保留程序数据与来源。", ""])
+    elif interpretation.status != "ok":
         lines.extend(["本报告未生成可采用的模型结论。以下只有程序计算、来源证据与明确的数据边界，不冒充GPT解读。", ""])
     return lines
 
@@ -183,9 +193,14 @@ def render_fund_report(analyses: List[FundAnalysis], failed: Dict[str, str], new
             f"- 基金资料：{_link('资料来源', profile.source_url)}；基金经理：{_text(profile.manager or '未提供')}；"
             f"成立日期：{profile.inception_date or '未提供'}。",
         ])
-        if interpretation is not None and interpretation.status == "ok":
+        if interpretation is not None:
+            scope = interpretation.fund_statuses.get(profile.code)
+            if scope is not None:
+                lines.extend(["", f"AI基金解读状态：{_text(scope.status)}；{_text(scope.reason)}", ""])
+                lines.extend(_diagnostic_lines(scope.diagnostics))
             insight = interpretation.funds.get(profile.code)
-            if insight is not None:
+            if (interpretation.status in {"ok", "partial"} and insight is not None
+                    and scope is not None and scope.status == "ok"):
                 lines.extend(["", "### AI基金解读（推理观点，非事实认证）", ""])
                 for key, label in INSIGHT_LABELS.items():
                     lines.append(f"**{label}**")
@@ -312,6 +327,31 @@ def run_fund_analysis(
             "model_failed", "解读组件不可用，保留程序数据与来源；未采用模型结论。",
             diagnostics={"stage": "component", "code": "component_failed"},
         )
+    # Complete scopes for component failures and legacy injected interpreters.
+    # Only requested, successfully fetched identities may enter the report contract.
+    legacy_scopes = not interpretation.fund_statuses
+    interpretation.fund_statuses = {
+        analysis.data.profile.code: interpretation.fund_statuses.get(
+            analysis.data.profile.code,
+            InterpretationScopeStatus(
+                "ok" if interpretation.status in {"ok", "partial"}
+                and analysis.data.profile.code in interpretation.funds else
+                (interpretation.status if interpretation.status in {"disabled", "unavailable"} else "model_failed"),
+                interpretation.reason, interpretation.diagnostics,
+            ),
+        ) for analysis in analyses
+    }
+    if legacy_scopes:
+        interpretation.comparison_status = InterpretationScopeStatus(
+            ("not_applicable" if len(analyses) == 1 else "ok") if interpretation.status == "ok" else
+            (interpretation.status if interpretation.status in {"disabled", "unavailable"} else "model_failed"),
+            interpretation.reason, interpretation.diagnostics,
+        )
+    for code, scope in [*interpretation.fund_statuses.items(), ("comparison", interpretation.comparison_status)]:
+        scope.diagnostics = safe_interpretation_diagnostics(scope.diagnostics)
+        if scope.status == "model_failed" and scope.diagnostics:
+            logger.info("[基金] 模型解读范围安全诊断 %s: %s", code,
+                        json.dumps(scope.diagnostics, ensure_ascii=True, sort_keys=True))
     interpretation.diagnostics = safe_interpretation_diagnostics(interpretation.diagnostics)
     if interpretation.diagnostics:
         logger.info("[基金] 模型解读安全诊断: %s", json.dumps(interpretation.diagnostics, ensure_ascii=True, sort_keys=True))
@@ -322,7 +362,7 @@ def run_fund_analysis(
     basename = f"fund_report_{generated_at:%Y%m%d_%H%M%S_%f}"
     report_path, snapshot_path = directory / f"{basename}.md", directory / f"{basename}.json"
     snapshot = {
-        "schema_version": 2, "asset_type": "mutual_fund", "generated_at": generated_at,
+        "schema_version": 3, "asset_type": "mutual_fund", "generated_at": generated_at,
         "as_of": end_day,
         "analyses": [dict(canonical_id=item.data.profile.canonical_id, **asdict(item)) for item in analyses],
         "failed_codes": failed,

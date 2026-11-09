@@ -217,7 +217,9 @@ def test_comparison_requires_aligned_dates_windows_and_known_currency(second, re
     output = valid_output(("000001", "000002"))
     output["comparison"] = [{"text": "同口径事实可以并列观察，但不能直接决定适配性。",
                              "evidence_ids": ["F000001:return_1m", "F000002:return_1m", "C:return_1m"]}]
-    assert interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output)).status == "model_failed"
+    result = interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output))
+    assert result.status == "partial" and result.funds and not result.comparison
+    assert result.comparison_status.status == "model_failed"
 
 
 def test_actual_start_and_missing_metric_prevent_comparison():
@@ -236,7 +238,9 @@ def test_aligned_parallel_facts_allowed_but_not_rankings():
                              "evidence_ids": ["F000001:return_1m", "F000002:return_1m", "C:return_1m"]}]
     assert interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output)).status == "ok"
     output["comparison"][0]["text"] = "前者优于后者，这意味着前者更加值得关注。"
-    assert interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output)).status == "model_failed"
+    result = interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output))
+    assert result.status == "partial" and result.funds and not result.comparison
+    assert result.comparison_status.status == "model_failed"
 
 
 def test_qdii_dated_holdings_and_related_assets_have_honest_boundaries():
@@ -469,7 +473,9 @@ def test_duplicate_placeholders_and_cross_fund_citations_are_rejected():
     items = [analysis(), analysis("000002")]
     output = valid_output(("000001", "000002"))
     output["funds"][0]["risks"][0]["evidence_ids"] = ["F000002:quality"]
-    assert interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output)).status == "model_failed"
+    result = interpret_funds(items, config=configuration(), analyzer_factory=fake_factory(output))
+    assert result.status == "partial" and result.funds and not result.comparison
+    assert result.comparison_status.status == "model_failed"
 
 
 @pytest.mark.parametrize("raw,stage,code", [
@@ -512,13 +518,16 @@ def test_safe_response_diagnostics_distinguish_failures_without_repair_or_retry(
 ])
 def test_statement_diagnostics_locate_validated_fund_section_and_index(changes, stage, code):
     output = valid_output(("000001", "000002"))
-    # Fail after an earlier valid section, still discard the whole response.
+    # Fail after an earlier valid section: discard this fund, preserve the independent fund.
     output["funds"][0]["risks"].append(copy.deepcopy(output["funds"][0]["risks"][0]))
     output["funds"][0]["risks"][1].update(changes)
     result = interpret_funds([analysis(), analysis("000002")], config=configuration(),
                              analyzer_factory=fake_factory(output))
     diagnostic = result.diagnostics
-    assert result.status == "model_failed" and not result.funds and not result.comparison and result.facts
+    assert result.status == "partial" and set(result.funds) == {"000002"} and not result.comparison and result.facts
+    assert result.fund_statuses["000001"].status == "model_failed"
+    assert result.fund_statuses["000002"].status == "ok"
+    assert result.fund_statuses["000001"].diagnostics == diagnostic
     assert (diagnostic["stage"], diagnostic["code"]) == (stage, code)
     assert diagnostic["fund_code"] == "000001" and diagnostic["fund_index"] == 0
     assert diagnostic["section"] == "risks" and diagnostic["item_index"] == 1
@@ -614,4 +623,4 @@ def test_representative_six_fund_response_keeps_history_missing_currency_and_new
                              "evidence_ids": ["F021190:return_1m", "F018123:return_1m", "C:return_1m"]}]
     failed = interpret_funds(analyses, news, config=configuration(), analyzer_factory=fake_factory(output))
     assert failed.diagnostics["code"] == "metric_unaligned" and failed.diagnostics["section"] == "comparison"
-    assert not failed.funds and not failed.comparison
+    assert failed.status == "partial" and len(failed.funds) == 6 and not failed.comparison

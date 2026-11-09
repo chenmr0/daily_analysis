@@ -63,6 +63,8 @@ class EvidenceFact:
     text: str
     source_url: str = ""
     data_date: Optional[str] = None
+    # Program-owned, complete clauses. Never learned from source/model text.
+    allowed_limitations: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,13 @@ class FundInsight:
 
 
 @dataclass
+class InterpretationScopeStatus:
+    status: str
+    reason: str
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class FundInterpretation:
     status: str
     reason: str
@@ -93,6 +102,9 @@ class FundInterpretation:
     comparison_context: dict[str, Any] = field(default_factory=dict)
     method: str = "evidence_cited_model_narrative"
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    fund_statuses: dict[str, InterpretationScopeStatus] = field(default_factory=dict)
+    comparison_status: InterpretationScopeStatus = field(default_factory=lambda: InterpretationScopeStatus(
+        "unavailable", "尚未完成比较校验。"))
 
 
 # Only these program-owned tokens and bounded counts may enter reports/logs.
@@ -105,8 +117,8 @@ _DIAGNOSTIC_CODES = {
     "json": {"json_invalid", "json_duplicate_key", "json_nonfinite", "json_depth"},
     "schema": {"root_schema", "fund_count", "fund_schema", "fund_identity", "section_size", "single_fund_comparison", "statement_schema", "text_type", "text_length", "citations_size"},
     "citation": {"citation_unknown", "citation_duplicate", "citation_wrong_fund", "placeholder_uncited", "placeholder_duplicate", "evidence_placeholder_missing"},
-    "narrative": {"control_character", "numeric_or_symbolic", "non_chinese", "chinese_numeral", "quantity_word", "forbidden_prose_marker", "unsafe_claim", "current_exposure", "historical_evidence_missing", "news_not_qualified", "return_direction", "other_fund_name"},
-    "comparison": {"metric_unaligned"},
+    "narrative": {"control_character", "numeric_or_symbolic", "non_chinese", "chinese_numeral", "quantity_word", "forbidden_prose_marker", "unsafe_claim", "current_exposure", "historical_evidence_missing", "unsupported_exposure_limitation", "news_not_qualified", "return_direction", "other_fund_name"},
+    "comparison": {"metric_unaligned", "citation_invalid_fund", "identity_unbound"},
     "component": {"component_failed", "validation_internal"},
 }
 _DIAGNOSTIC_COUNTS = {
@@ -196,12 +208,38 @@ def _news_items(value: object) -> list[Mapping[str, Any]]:
     return [item for item in value[:12] if isinstance(item, Mapping)]
 
 
+# Closed vocabulary for non-assertive exposure clauses. A match must occupy the
+# entire clause and be supported by cited program facts for every named scope.
+# Absence means absence from this input, not non-disclosure or an empty portfolio.
+_HOLDINGS_LIMITATIONS = (
+    "不能推断当前完整持仓", "无法确认持仓变化", "无法确认当前持仓",
+    "不代表完整底层敞口", "不足以说明完整配置", "应核验持仓资料的适用时点",
+    "不能仅凭净值变化判断配置",
+)
+_MISSING_HOLDINGS_LIMITATIONS = (
+    "本次输入未取得可用股票持仓数据", "本次未取得可用股票持仓数据",
+    "未取得可用股票持仓数据", "未取得可用股票持仓披露", "未获得可用持仓明细",
+    "持仓数据未提供或未覆盖", "持仓数据未提供", "股票持仓数据不可用",
+    "可用持仓数据缺失", "持仓信息缺失", "缺少可用持仓信息", "缺少可用股票持仓数据",
+    "持仓缺失不代表空仓", "缺失不等于空仓", "不代表空仓",
+)
+_MISSING_ALLOCATION_LIMITATIONS = (
+    "本次输入未提供可用行业配置数据", "未取得可用行业配置资料",
+    "行业配置数据不可用", "行业配置数据缺失", "缺少可用行业配置资料",
+)
+_FEEDER_LIMITATIONS = (
+    "目标身份本身不足以说明完整底层敞口", "无法确认当前配置及完整穿透关系",
+    "联接基金股票表不等于目标ETF或完整底层持仓",
+)
+
+
 def _build_context(analyses, news):
     facts: dict[str, EvidenceFact] = {}
     comparison = build_comparison_context(analyses)
 
-    def fact(fid, codes, kind, text, url="", day=None):
-        facts[fid] = EvidenceFact(fid, list(codes), kind, text, str(url or ""), str(day) if day else None)
+    def fact(fid, codes, kind, text, url="", day=None, limitations=()):
+        facts[fid] = EvidenceFact(fid, list(codes), kind, text, str(url or ""),
+                                  str(day) if day else None, list(limitations))
 
     for analysis in analyses:
         data, profile = analysis.data, analysis.data.profile
@@ -258,22 +296,30 @@ def _build_context(analyses, news):
                     "此为来源身份匹配，不是独立复核，也不证明今天的配置或完整底层持仓。")
             fact(prefix + f":related:{len(verified_assets) - 1}", [code],
                  "dated_allocation" if asset.category == "industry" else "target_relationship",
-                 text, asset.source_url, asset.source_date)
+                 text, asset.source_url, asset.source_date,
+                 ("目标ETF配置比例未提供",) if asset.category == "target_etf" and asset.weight_pct is None else ())
+        if not any(asset.category == "industry" for asset in verified_assets):
+            fact(prefix + ":allocation", [code], "missing_allocation",
+                 "本次输入没有可用的带报告期行业配置资料；不代表没有行业投资，也不表示配置比例为零。",
+                 limitations=_MISSING_ALLOCATION_LIMITATIONS)
         if "联接" in profile.name:
             relationship = ("资料已提供目标ETF的身份关联，未核验当前配置及完整穿透关系"
                             if any(a.category == "target_etf" for a in verified_assets)
                             else "未核验目标ETF与穿透关系")
             fact(prefix + ":feeder", [code], "risk_boundary",
-                 f"联接基金股票表不等于目标ETF或完整底层持仓；{relationship}，不进行收益归因。", profile.source_url)
+                 f"联接基金股票表不等于目标ETF或完整底层持仓；{relationship}，不进行收益归因。", profile.source_url,
+                 limitations=_FEEDER_LIMITATIONS)
         holdings = data.holdings
         if holdings and holdings.holdings:
             details = "；".join(f"{h.name}（{h.code}）占基金净值 {h.weight_pct:.2f}%" for h in holdings.holdings[:10])
             text = (f"截至报告期末 {holdings.report_period_end} 的已披露股票：{details}。"
                     f"真实披露日期：{holdings.published_at or '未提供'}；不是当前完整持仓，不据此计算行业暴露或涨跌贡献。")
-            fact(prefix + ":holdings", [code], "dated_holdings", text, holdings.source_url, holdings.report_period_end)
+            fact(prefix + ":holdings", [code], "dated_holdings", text, holdings.source_url,
+                 holdings.report_period_end, _HOLDINGS_LIMITATIONS)
         else:
             fact(prefix + ":holdings", [code], "missing_holdings",
-                 "持仓数据未提供或未覆盖，不代表空仓，不推断当前持仓或完整行业暴露。")
+                 "本次输入未取得可用股票持仓数据；未提供或未覆盖不代表空仓，不推断当前持仓或完整行业暴露。",
+                 limitations=(*_HOLDINGS_LIMITATIONS, *_MISSING_HOLDINGS_LIMITATIONS))
         bundle = (news or {}).get(code, {})
         excluded_statuses = []
         for index, item in enumerate(_news_items(bundle)):
@@ -323,8 +369,16 @@ fund_code必须是输入的完整六位字符串（保留前导零）。其余�
 不将不同日期、实际区间或未知币种指标比较，不使用高于、低于、领先等排名措辞。单基金comparison为空。
 只用中文自由叙述，缩写仅可用ETF、QDII、NAV；外文名称、比例和日期放入证据占位符。禁止半成、分之等隐含量化形式。
 每个持仓或配置断言必须在同一分句标为历史、已披露、报告期或快照，并引用有日期的对应资料。
+股票持仓主题须引用dated_holdings，行业配置主题须引用dated_allocation；同句兼含两种主题须同时支持，不可互相替代。
+目标ETF关系只证明身份，不支持自由文字的ETF配置、权重或敞口断言；不能借股票或行业资料的报告期背书。相关已知资料仅用完整事实占位符呈现。
+敞口、集中度、权重等模糊措辞须明确属于股票持仓还是行业配置；不能只说历史敞口而不明确主题。
+横向观察提及的已知基金名称必须与该条引用身份一致，不得点名未引用的基金。
 不能在其他分句加历史来修饰现阶段敞口断言。缺失不能解释为空仓。
-信息边界可用“已披露历史持仓仅为报告期快照”“无法确认持仓变化”“不代表完整底层敞口”“不足以说明完整配置”等明确限制措辞。
+持仓或配置缺失、不可用与信息边界不是持仓断言，但必须引用本基金同主题证据。
+只有事实allowed_limitations列出的完整分句可用于自由文字的缺失或边界陈述，原样使用且独立成句，不追加肯定断言。
+missing_holdings只证明本次输入缺少可用股票资料，不能推出行业配置缺失；missing_allocation只证明本次输入缺少可用行业配置资料。
+缺失不是管理人未披露，也不是没有投资；未知不等于零。其他缺失原因请用完整证据占位符呈现，不自行扩展。
+即使有历史资料，也只能作同分句带历史限定的断言；信息边界不能豁免同句后续持仓或配置断言。
 新闻只是待核实线索，引用时文字必须写“待核实”或“线索”，不将其认证为当前事件、持仓或收益因果关系。
 程序检查不等于语义证明：自由叙述仍可能包含量化、时效或推理错误，不声称由程序保证准确。
 text必须为单行，不使用换行、制表符、隐藏字符、符号图标或Markdown。禁止词法直接匹配，因此否定句也不要复写被禁止词；例如不要写“不构成收益归因”或“不保证收益”，改写为“关联证据不足，仍需独立核验”。
@@ -337,7 +391,7 @@ text必须为单行，不使用换行、制表符、隐藏字符、符号图标�
 _UNSAFE_CLAIM = re.compile(
     r"昨天|昨日|今天|今日|明天|明日|上周|本周|下周|上月|本月|下月|去年|今年|明年|"
     r"评分|打分|分数|收益预测|目标收益|翻倍|翻番|腰斩|买入|卖出|增持|减持|加仓|减仓|抄底|止盈|止损|目标价|买点|卖点|仓位建议|"
-    r"必然|必定|保证收益|稳赚|一定会|确定会|无风险|零风险|保证回报|"
+    r"必然|必定|保证收益|稳赚|一定会|确定会|无风险|零风险|保证回报|无需承担.{0,8}风险|不(?:再)?承担.{0,8}风险|风险(?:已)?消失|"
     r"导致|驱动|推动|得益于|受益于|拖累|贡献|归因|带动|"
     r"优于|强于|弱于|胜过|逊于|更好|更差|最好|最差|领先|落后|跑赢|跑输|首选|排名|高于|低于|更高|更低|更大|更小|较高|较低",
     re.IGNORECASE,
@@ -346,15 +400,38 @@ _NON_QUANTITATIVE_TERMS = re.compile("进一步|不一致|一致|一般|单一|�
 _CHINESE_NUMERALS = re.compile("[零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟萬億兆半幺廿卅卌]")
 _QUANTITY_WORDS = re.compile(r"分之|百分点|百分比|百分率|千分率|基点|成数|成倍|倍数|数倍|翻倍|翻番|腰斩|[几数多满][成分厘倍折]|\d")
 _ACRONYMS = re.compile(r"(?<![A-Za-z])(?:ETF|QDII|NAV)(?![A-Za-z])")
-_EXPOSURE_WORDS = r"持仓|持有|重仓|配置|仓位|敞口|暴露|投资于|投资在|集中于|集中在|集中度|权重|占比"
+_EXPOSURE_WORDS = r"空仓|持仓|持有|重仓|配置|仓位|敞口|暴露|投资于|投资在|集中于|集中在|集中度|权重|占比"
 _EXPOSURE = re.compile(_EXPOSURE_WORDS)
 _CURRENT_EXPOSURE = re.compile("当前|目前|现在|现阶段|现时|现下|眼下|当下|现有|迄今|至今|实时|仍然|依然|仍|正在|继续持|保持|维持|最新|今日|今天")
 _HISTORICAL_EXPOSURE = re.compile("历史|已披露|报告期|快照|期末|披露时点")
-_EXPOSURE_LIMITATION = re.compile(
-    rf"(?:无法|不能|尚未|未能|不宜|不足以|需|应|待).{{0,6}}(?:核实|核验|确认|确定|判断|推断|代表|说明|识别|衡量).{{0,8}}(?:{_EXPOSURE_WORDS})|"
-    rf"(?:{_EXPOSURE_WORDS}).{{0,8}}(?:未提供|缺失|不足|不明|未知|未核实|未核验|不可用)|"
-    rf"(?:不代表|不等于).{{0,8}}(?:{_EXPOSURE_WORDS})"
+# Missing-data claims and negatives are not historical assertions. If not a
+# supported closed clause they must fail, even beside genuine dated evidence.
+_EXPOSURE_LIMITATION_MARKERS = re.compile(
+    r"缺失|缺少|未提供|未取得|未获得|未覆盖|未披露|不可用|不明|未知|空仓|"
+    r"无法|不能|尚未|未能|不宜|不足以|不代表|不等于|未核实|未核验|没有|不持有|未持有|未配置|为空|为无|清仓"
 )
+_CLAUSE_SPLIT = re.compile(r"[，。；！？,;!?：:（）()、]|但是|但|然而|不过|并且|同时|且")
+
+
+def _supports_limitation(clause, refs, facts):
+    scopes = {code for ref in refs for code in facts[ref].fund_codes}
+    supported = {code for ref in refs if clause in facts[ref].allowed_limitations
+                 for code in facts[ref].fund_codes}
+    return bool(scopes) and scopes <= supported
+
+
+def _dated_scopes(refs, facts, kind):
+    scopes = set()
+    for ref in refs:
+        fact = facts[ref]
+        if fact.kind != kind or not fact.data_date:
+            continue
+        try:
+            date.fromisoformat(fact.data_date)
+        except (TypeError, ValueError):
+            continue
+        scopes.update(fact.fund_codes)
+    return scopes
 
 
 def _guard_chinese_prose(text: str, refs, facts) -> str:
@@ -379,14 +456,30 @@ def _guard_chinese_prose(text: str, refs, facts) -> str:
         raise _ValidationError("narrative", "forbidden_prose_marker")
     if _UNSAFE_CLAIM.search(compact):
         raise _ValidationError("narrative", "unsafe_claim")
-    historical_refs = any(facts[ref].kind in {"dated_holdings", "dated_allocation"} for ref in refs)
-    for clause in re.split(r"[，。；！？,;!?]|但是|但|然而|不过|并且|同时|且", compact):
-        exposure, limitation = _EXPOSURE.search(clause), _EXPOSURE_LIMITATION.search(clause)
-        if not exposure or (limitation and limitation.start() <= exposure.start()):
+    scopes = {code for ref in refs for code in facts[ref].fund_codes}
+    dated_scopes = {kind: _dated_scopes(refs, facts, kind) for kind in ("dated_holdings", "dated_allocation")}
+    for clause in _CLAUSE_SPLIT.split(compact):
+        if not _EXPOSURE.search(clause):
+            continue
+        if _supports_limitation(clause, refs, facts):
             continue
         if _CURRENT_EXPOSURE.search(clause):
             raise _ValidationError("narrative", "current_exposure")
-        if not historical_refs or not _HISTORICAL_EXPOSURE.search(clause):
+        if _EXPOSURE_LIMITATION_MARKERS.search(clause):
+            raise _ValidationError("narrative", "unsupported_exposure_limitation")
+        # Target-ETF identity/weight is not a dated allocation snapshot in
+        # this model. Neither stocks nor industry data can lend it a date.
+        if "ETF" in clause or "目标基金" in clause or "联接标的" in clause:
+            raise _ValidationError("narrative", "historical_evidence_missing")
+        # Stocks/holdings and industry/allocation are different evidence
+        # domains. Mixed clauses need both; unspecified exposure is not guessed.
+        required = set()
+        if re.search(r"持仓|持有|重仓|仓位|股票|个股|公司", clause):
+            required.add("dated_holdings")
+        if re.search(r"配置|行业|板块|产业|主题", clause):
+            required.add("dated_allocation")
+        if (not required or any(not scopes <= dated_scopes[kind] for kind in required)
+                or not _HISTORICAL_EXPOSURE.search(clause)):
             raise _ValidationError("narrative", "historical_evidence_missing")
     return prose
 
@@ -435,6 +528,20 @@ def _parse_response(text, analyses, facts, comparison):
     if not isinstance(output["funds"], list) or len(output["funds"]) != len(expected):
         fail("schema", "fund_count")
 
+    seen = set()
+    for fund_index, item in enumerate(output["funds"]):
+        if not isinstance(item, dict) or set(item) != {"fund_code", *_SECTIONS}:
+            fail("schema", "fund_schema", fund_index=fund_index)
+        code = item["fund_code"]
+        if not isinstance(code, str) or code not in expected or code in seen:
+            fail("schema", "fund_identity", fund_index=fund_index)
+        seen.add(code)
+    # Comparison shape is a global contract, not a skippable content failure.
+    if not isinstance(output["comparison"], list) or not (0 if len(expected) == 1 else 1) <= len(output["comparison"]) <= 6:
+        fail("schema", "section_size", section="comparison")
+    if len(expected) == 1 and output["comparison"]:
+        fail("schema", "single_fund_comparison", section="comparison")
+
     def statements(items, section, code=None, fund_index=None):
         location = {"section": section}
         if code is not None:
@@ -481,7 +588,11 @@ def _parse_response(text, analyses, facts, comparison):
             if section == "evidence" and not placeholders:
                 invalid("citation", "evidence_placeholder_missing")
             try:
+                # Keep the joined view: slots must not split unsafe words,
+                # currentness markers, or topic/citation checks. Also check a
+                # boundary view so they cannot glue a permitted limitation.
                 free_text = _guard_chinese_prose(_PLACEHOLDER.sub("", narrative), refs, facts)
+                _guard_chinese_prose(_PLACEHOLDER.sub("；", narrative), refs, facts)
             except _ValidationError as exc:
                 invalid(exc.diagnostics["stage"], exc.diagnostics["code"])
             if any(facts[ref].kind == "news_lead" for ref in refs) and not re.search("待核实|待核验|线索", free_text):
@@ -493,27 +604,53 @@ def _parse_response(text, analyses, facts, comparison):
                 if re.search(pattern, free_text) and (not returns or any(v is None or v * sign <= 0 for v in returns)):
                     invalid("narrative", "return_direction")
             if section == "comparison":
+                for citation_index, ref in enumerate(refs):
+                    if not set(facts[ref].fund_codes) <= set(funds):
+                        invalid("comparison", "citation_invalid_fund", citation_index=citation_index)
                 for ref in refs:
                     if facts[ref].kind == "metric":
                         key = ref.split(":", 1)[1]
                         if f"C:{key}" not in refs or not comparison["metrics"][key]["eligible"]:
                             invalid("comparison", "metric_unaligned")
+            cited_codes = {fund_code for ref in refs for fund_code in facts[ref].fund_codes}
+            identity_text = re.sub(r"\s+", "", free_text)
             for analysis in analyses:
-                if (code is not None and analysis.data.profile.code != code and analysis.data.profile.name
-                        and analysis.data.profile.name in free_text):
+                profile = analysis.data.profile
+                name = re.sub(r"\s+", "", unicodedata.normalize("NFKC", profile.name or ""))
+                if not name or name not in identity_text:
+                    continue
+                if code is not None and profile.code != code:
                     invalid("narrative", "other_fund_name")
+                if section == "comparison":
+                    if profile.code not in funds:
+                        invalid("comparison", "citation_invalid_fund")
+                    if profile.code not in cited_codes:
+                        invalid("comparison", "identity_unbound")
             result.append(Statement(_PLACEHOLDER.sub(lambda m: facts[m.group(1)].text, narrative), list(refs)))
         return result
 
-    funds = {}
+    funds, fund_statuses = {}, {}
     for fund_index, item in enumerate(output["funds"]):
-        if not isinstance(item, dict) or set(item) != {"fund_code", *_SECTIONS}:
-            fail("schema", "fund_schema", fund_index=fund_index)
         code = item["fund_code"]
-        if not isinstance(code, str) or code not in expected or code in funds:
-            fail("schema", "fund_identity", fund_index=fund_index)
-        funds[code] = FundInsight(**{section: statements(item[section], section, code, fund_index) for section in _SECTIONS})
-    return funds, statements(output["comparison"], "comparison")
+        try:
+            insight = FundInsight(**{section: statements(item[section], section, code, fund_index) for section in _SECTIONS})
+        except _ValidationError as exc:
+            fund_statuses[code] = InterpretationScopeStatus(
+                "model_failed", "本基金模型解读未通过校验，已弃用全部章节；保留程序数据。", exc.diagnostics)
+        else:
+            funds[code] = insight
+            fund_statuses[code] = InterpretationScopeStatus("ok", "本基金解读通过规则检查，仍属AI推理观点。")
+    try:
+        comparison_statements = statements(output["comparison"], "comparison")
+    except _ValidationError as exc:
+        comparison_statements = []
+        comparison_status = InterpretationScopeStatus(
+            "model_failed", "横向观察未通过校验，已全部弃用；独立有效的基金解读保留。", exc.diagnostics)
+    else:
+        comparison_status = InterpretationScopeStatus(
+            "not_applicable" if len(expected) == 1 else "ok",
+            "单基金不进行横向观察。" if len(expected) == 1 else "横向观察通过规则检查，仍属AI推理观点。")
+    return funds, comparison_statements, fund_statuses, comparison_status
 
 
 _ENDPOINT_KEY = re.compile(r"(?:^|_)(?:api_base|base_url|api_endpoint|endpoint)$", re.IGNORECASE)
@@ -621,7 +758,7 @@ def _cloud_config(config):
     return safe
 
 
-def interpret_funds(
+def _interpret_funds(
     analyses: Sequence[FundAnalysis], news: Optional[Mapping[str, Any]] = None, *,
     enabled: bool = True, config=None, analyzer_factory: Optional[Callable[..., Any]] = None,
     timeout_seconds: float = 45.0,
@@ -735,7 +872,8 @@ def interpret_funds(
     result.provider, result.model = _bounded_text(response.provider, 120), _bounded_text(response.model, 200)
     result.backend = response.backend
     try:
-        result.funds, result.comparison = _parse_response(response.text, analyses, facts, comparison)
+        result.funds, result.comparison, result.fund_statuses, result.comparison_status = _parse_response(
+            response.text, analyses, facts, comparison)
     except _ValidationError as exc:
         result.status, result.reason = "model_failed", "模型输出未通过结构、基金身份或证据校验，未采用任何模型结论；保留确定性报告。"
         result.diagnostics = exc.diagnostics
@@ -744,7 +882,34 @@ def interpret_funds(
         result.status, result.reason = "model_failed", "模型输出未通过结构、基金身份或证据校验，未采用任何模型结论；保留确定性报告。"
         result.diagnostics = {"stage": "component", "code": "validation_internal"}
         return result
-    result.status = "ok"
-    result.reason = ("AI定性解读，不是已核实事实或投资指令；数值与日期占位由程序证据填充，自由文字仅经过保守规则检查，"
-                     "仍可能存在量化或持仓时效错误，不能保证所有定性推理正确。")
+    failures = [scope for scope in result.fund_statuses.values() if scope.status != "ok"]
+    if result.comparison_status.status == "model_failed":
+        failures.append(result.comparison_status)
+    if failures:
+        result.status = "partial" if result.funds else "model_failed"
+        result.reason = ("部分模型解读未通过校验；仅采用逐基金与横向观察中明确标为通过的内容。"
+                         if result.funds else "全部基金模型解读未通过校验，未采用模型结论；保留确定性报告。")
+        result.diagnostics = failures[0].diagnostics
+    else:
+        result.status = "ok"
+        result.reason = ""
+    result.reason += ("AI定性解读，不是已核实事实或投资指令；数值与日期占位由程序证据填充，自由文字仅经过保守规则检查，"
+                      "仍可能存在量化或持仓时效错误，不能保证所有定性推理正确。")
+    return result
+
+
+def interpret_funds(
+    analyses: Sequence[FundAnalysis], news: Optional[Mapping[str, Any]] = None, *,
+    enabled: bool = True, config=None, analyzer_factory: Optional[Callable[..., Any]] = None,
+    timeout_seconds: float = 45.0,
+) -> FundInterpretation:
+    """Return explicit statuses for every scope, including whole-batch failures."""
+    result = _interpret_funds(analyses, news, enabled=enabled, config=config,
+                              analyzer_factory=analyzer_factory, timeout_seconds=timeout_seconds)
+    if not result.fund_statuses:
+        result.fund_statuses = {
+            a.data.profile.code: InterpretationScopeStatus(result.status, result.reason, dict(result.diagnostics))
+            for a in analyses
+        }
+        result.comparison_status = InterpretationScopeStatus(result.status, result.reason, dict(result.diagnostics))
     return result

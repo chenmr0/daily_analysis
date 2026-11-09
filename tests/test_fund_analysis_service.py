@@ -31,6 +31,9 @@ def test_report_is_fund_specific_and_snapshot_is_isolated(tmp_path):
     assert report.notification_status == "disabled"
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
     assert saved["asset_type"] == "mutual_fund"
+    assert saved["schema_version"] == 3
+    assert saved["interpretation"]["fund_statuses"]["001672"]["status"] == "disabled"
+    assert saved["interpretation"]["comparison_status"]["status"] == "disabled"
     assert saved["analyses"][0]["data"]["profile"]["code"] == "001672"
     for key in ("open", "high", "low", "close", "volume", "rating", "sentiment_score"):
         assert key not in saved["analyses"][0]["data"]["navs"][0]
@@ -245,7 +248,7 @@ def test_interpretation_persists_model_and_cited_sections(tmp_path):
     for text in ("核心结论", "风险提示", "后续观察", "test-configured-model", "openai", "https://example.test/nav"):
         assert text in report.markdown
     saved = json.loads(open(report.snapshot_path, encoding="utf-8").read())
-    assert saved["schema_version"] == 2
+    assert saved["schema_version"] == 3
     assert saved["interpretation"]["facts"][fact.evidence_id]["data_date"] == "2026-11-06"
     assert saved["notification"]["status"] == "disabled"
 
@@ -311,6 +314,9 @@ def test_component_diagnostic_is_consistent_and_never_leaks_exception(tmp_path, 
                                output_dir=tmp_path)
     saved = json.loads(open(report.snapshot_path, encoding='utf-8').read())
     assert saved['interpretation']['diagnostics'] == {'stage': 'component', 'code': 'component_failed'}
+    for scope in (saved['interpretation']['fund_statuses']['001672'], saved['interpretation']['comparison_status']):
+        assert scope['status'] == 'model_failed'
+        assert scope['diagnostics'] == saved['interpretation']['diagnostics']
     assert r'component\_failed' in report.markdown and 'component_failed' in caplog.text
     assert secret not in report.markdown + caplog.text + json.dumps(saved)
     assert report.notification_status == 'disabled'
@@ -403,3 +409,88 @@ def test_provider_response_validation_diagnostic_reaches_final_report_without_ra
     assert '1.100000' in report.markdown
     assert report.notification_status == 'disabled'
     analyzer.generate_text_with_metadata.assert_called_once()
+
+
+@pytest.mark.parametrize('reject_fund', [True, False])
+def test_partial_provider_result_preserves_accepted_insights_and_notifies_once(tmp_path, reject_fund):
+    from functools import partial
+    from src.services.fund_interpretation import interpret_funds
+    from src.llm.generation_backend import GenerationResult
+    codes = ['001672', '024480']
+    fetcher, notifier, analyzer = Mock(), Mock(), Mock()
+    fetcher.fetch.side_effect = [sample(code) for code in codes]
+    funds = []
+    for code in codes:
+        statement = {'text': '已披露资料可用于观察历史情况：{{F' + code + ':nav}}',
+                     'evidence_ids': [f'F{code}:nav']}
+        funds.append({'fund_code': code, **{key: [statement] for key in
+                                          ('conclusion', 'risks', 'evidence', 'observations')}})
+    if reject_fund:
+        funds[1]['conclusion'] = [{'text': '应拒绝的原始模型文字。', 'evidence_ids': ['PRIVATE_UNKNOWN_ID']}]
+    payload = {'funds': funds, 'comparison': [
+        {'text': '应拒绝的横向模型文字。', 'evidence_ids': ['PRIVATE_COMPARISON_ID']},
+    ]}
+    analyzer.get_generation_backend_identity.return_value = ('litellm', 'openai/test')
+    analyzer.is_available.return_value = True
+    analyzer.generate_text_with_metadata.return_value = GenerationResult(json.dumps(payload), 'test-model', 'openai', 'litellm', {})
+    config = SimpleNamespace(generation_backend='litellm', generation_fallback_backend='', litellm_model='openai/test',
+                             litellm_fallback_models=[], llm_model_list=[], openai_base_url='')
+    notifier.is_available.return_value = True
+    notifier.send_with_results.return_value = SimpleNamespace(status='sent', channel_results=[])
+    report = run_fund_analysis(codes, fetcher=fetcher, include_news=False, include_interpretation=True,
+                               interpreter=partial(interpret_funds, config=config, analyzer_factory=lambda **kwargs: analyzer),
+                               notifier=notifier, send_notification=True, output_dir=tmp_path)
+    saved_text = open(report.snapshot_path, encoding='utf-8').read()
+    saved = json.loads(saved_text)
+    interpretation = saved['interpretation']
+    assert saved['schema_version'] == 3
+    assert report.interpretation_status == interpretation['status'] == 'partial'
+    assert interpretation['fund_statuses']['001672']['status'] == 'ok'
+    assert interpretation['fund_statuses']['024480']['status'] == ('model_failed' if reject_fund else 'ok')
+    assert interpretation['comparison_status']['status'] == 'model_failed'
+    assert interpretation['comparison'] == []
+    assert set(interpretation['funds']) == ({'001672'} if reject_fund else set(codes))
+    assert len(saved['analyses']) == 2 and not report.failed_codes
+    assert report.markdown.count('最新已披露单位净值：1.100000') == 2
+    assert report.markdown.count('### AI基金解读（推理观点，非事实认证）') == (1 if reject_fund else 2)
+    assert '部分AI解读通过校验' in report.markdown
+    assert '未生成可采用的模型结论' not in report.markdown
+    assert '横向观察状态：model\\_failed' in report.markdown
+    for marker in ('应拒绝的原始模型文字', '应拒绝的横向模型文字', 'PRIVATE_UNKNOWN_ID', 'PRIVATE_COMPARISON_ID'):
+        assert marker not in report.markdown + saved_text
+    analyzer.generate_text_with_metadata.assert_called_once()
+    notifier.send_with_results.assert_called_once_with(
+        report.markdown, route_type='report', email_subject=f"场外基金已披露净值日报 - {saved['as_of']}",
+    )
+    assert saved['notification']['status'] == report.notification_status == 'sent'
+
+
+def test_partial_scope_diagnostics_are_sanitized_at_reporting_boundary(tmp_path, caplog):
+    from src.services.fund_interpretation import (
+        FundInsight, FundInterpretation, InterpretationScopeStatus, Statement,
+    )
+    caplog.set_level('INFO', logger='src.services.fund_analysis_service')
+    fetcher = Mock()
+    fetcher.fetch.side_effect = [sample('001672'), sample('024480')]
+    unsafe = {'stage': 'citation', 'code': 'citation_unknown', 'raw_response': 'PRIVATE_RESPONSE',
+              'exception': 'SECRET_KEY', 'section': 'secret-section', 'fund_code': 'private-account',
+              'counts': {'citation_count': 1, 'private-body': 123, 'text_chars': 'SECRET_VALUE'}}
+    interpretation = FundInterpretation(
+        'partial', '部分基金观点通过校验。', funds={'001672': FundInsight(conclusion=[Statement('已接受的观点。', [])])},
+        fund_statuses={'001672': InterpretationScopeStatus('ok', '通过校验。'),
+                       '024480': InterpretationScopeStatus('model_failed', '引用校验失败。', dict(unsafe))},
+        comparison_status=InterpretationScopeStatus('model_failed', '引用校验失败。', dict(unsafe)),
+    )
+    report = run_fund_analysis(['001672', '024480'], fetcher=fetcher, include_news=False,
+                               interpreter=Mock(return_value=interpretation), output_dir=tmp_path)
+    saved_text = open(report.snapshot_path, encoding='utf-8').read()
+    saved = json.loads(saved_text)['interpretation']
+    expected = {'stage': 'citation', 'code': 'citation_unknown', 'counts': {'citation_count': 1}}
+    assert saved['fund_statuses']['024480']['diagnostics'] == expected
+    assert saved['comparison_status']['diagnostics'] == expected
+    assert '模型解读范围安全诊断 024480:' in caplog.text
+    assert '模型解读范围安全诊断 comparison:' in caplog.text
+    assert '已接受的观点' in report.markdown and '引用校验失败' in report.markdown
+    assert r'citation\_unknown' in report.markdown
+    for marker in ('PRIVATE_RESPONSE', 'SECRET_KEY', 'secret-section', 'private-account', 'private-body', 'SECRET_VALUE'):
+        assert marker not in saved_text + report.markdown + caplog.text

@@ -26,8 +26,8 @@ python main.py --funds 021190,018123,020356,001672,025500,024480
 - 不带代码的 `--funds` 读取 `FUND_LIST`；显式代码覆盖配置。进程环境优先于 `.env`，空或非法清单报错，不回退到股票。
 - `FUND_LIST` 不修改 `STOCK_LIST`，普通股票启动不消费它，错误的未使用基金清单也不会阻断股票。
 - CLI基金模式默认尝试云端AI解读，复用现有模型/渠道配置；没有可用密钥或模型失败时明确降级为程序数据报告。`--fund-no-ai` 的纯数据模式不需要LLM密钥。基金模式拒绝本地Codex、Claude Code、OpenCode生成及本地回退；模型地址要求HTTPS和公开地址语法，拒绝私网、回环和已知本地别名。不解析DNS，也不证明公开域名背后的实际部署位置。
-- 报告保存为 `reports/fund_report_<UTC时间戳>.md`，同名 JSON 保存独立基金身份、资料、净值历史、指标、来源、抓取时间、新闻和失败项。JSON `schema_version=2` 增加 `news_evidence`（来源/关系/时效/覆盖）及 `interpretation`（状态、实际模型、事实引用、单基金解读和横向观察），保留原 `news` 文本。不会写入股票 `StockDaily` 或分析历史表。
-- 一只基金失败仍保存其他基金及失败原因；有基金失败时 CLI 返回 1。通知全部/部分失败、无可用通知渠道或结果不确定也返回 1；主动禁用通知和配置中的降噪抑制不视为失败。
+- 报告保存为 `reports/fund_report_<UTC时间戳>.md`，同名 JSON 保存独立基金身份、资料、净值历史、指标、来源、抓取时间、新闻和失败项。JSON `schema_version=3` 保留 `news_evidence`（来源/关系/时效/覆盖）及 `interpretation`（状态、实际模型、事实引用、单基金解读和横向观察），保留原 `news` 文本；增加 `interpretation.fund_statuses`、`comparison_status` 及事实的 `allowed_limitations`，状态枚举增加 `partial`。读取快照的外部脚本需接受新版本及状态；没有 Web/API 消费端变更。不会写入股票 `StockDaily` 或分析历史表。
+- 一只基金数据获取或校验失败仍保存其他基金及失败原因；存在此类数据失败时 CLI 返回 1（AI单基金拒绝或 `partial` 不属于此类数据失败）。通知全部/部分失败、无可用通知渠道或结果不确定也返回 1；主动禁用通知和配置中的降噪抑制不视为失败。
 - 通知结果记录在日志和JSON的 `notification`（状态、渠道成功标记、错误代码），不保存邮件账号凭证。失败/结果不确定均不由本模块重发；SMTP接收成功仍不等于收件箱已送达。
 - 通知沿用 `report` 路由与默认收件人，**不使用股票代码分组**、不向所有邮件分组广播。基金邮件使用基金主题。已有股票/ETF的默认主题和路由不变。
 
@@ -101,11 +101,21 @@ JSON新闻追加 `evidence_scope` 和 `model_eligible`：`fund_event` 是本基�
 
 通过现有 `GeminiAnalyzer.generate_text_with_metadata` 公共接口复用云端LiteLLM模型及配置的云端回退，不是给规则模板改名。虽然接口类名含Gemini，实际可配置OpenAI、Gemini、Anthropic等，报告显示实际返回模型/供应方/后端，不冒称GPT。需要GPT时使用项目现有OpenAI云端配置，不增加基金专用新密钥。
 
-一批基金一次请求，生成每只核心结论、风险、证据、后续观察及横向观察。程序先计算事实，模型以事实ID占位引用数字、日期、代码，另行撰写中文定性解释。引用、结构、基金归属、数量词、方向和当前持仓等经过保守检查，失败整批弃用模型结论并保留数据。自然语言检查不是事实证明，仍可能遗漏量化/时态错误，也可能拒绝合理文字；报告明确标记AI观点，关键判断应回查原始证据。
+一批基金一次请求，生成每只核心结论、风险、证据、后续观察及横向观察。程序先计算事实，模型以事实ID占位引用数字、日期、代码，另行撰写中文定性解释。引用、结构、基金归属、数量词、方向和当前持仓等经过保守检查。响应解析、全局结构与基金身份不完整或不一致时仍整批拒绝；通过全局检查后，每只基金独立校验，单只失败只弃用该基金全部AI章节，其余有效观点保留。横向观察独立全有或全无，任何横向语句失败会弃用全部横向观察，不丢弃已通过的单基金观点；引用已拒绝基金的事实（包括包含该基金的比较事实）也会拒绝。确定性数据始终保留。自然语言检查不是事实证明，仍可能遗漏量化/时态错误，也可能拒绝合理文字；报告明确标记AI观点，关键判断应回查原始证据。
+
+### 缺失证据与限制措辞契约
+
+程序根据实际输入生成 `missing_holdings`（`F<code>:holdings`）及 `missing_allocation`（`F<code>:allocation`）事实。缺少可用股票明细不代表空仓；没有可用、带报告期的行业配置资料不代表没有行业投资或比例为零。本次检索缺失不能证明管理人尚未披露，因此“持仓数据暂未披露”“当前持仓数据未披露”不获许可，可改用有据的“本次未取得可用股票持仓数据”。缺行业配置与缺股票持仓分别判断，基金类型、净值、新闻和笼统质量警告不能替代这些证据。
+
+事实的 `allowed_limitations` 只由程序设置，不从来源文字、新闻标题或模型返回中推导授权。涉及持仓/敞口限制的自由文字必须是所引用事实明确允许的完整短句；同一语句涉及的所有基金都需有相应事实支持。例如缺持仓事实允许“未取得可用股票持仓数据”“持仓缺失不代表空仓”，缺行业配置事实允许“行业配置数据不可用”。目标ETF身份关系没有可用于自由文字配置断言的带日期快照，不能借股票或行业资料日期背书目标ETF配置/权重/敞口；仅允许完整事实占位符呈现已知资料。目标ETF身份已核验且比例确实缺失时才允许“目标ETF配置比例未提供”，不能据此声称缺少股票持仓或当前配置已核验。
+
+不在允许短句清单内的措辞仍可能被保守拒绝，建议直接引用程序事实占位符（例如 `{{F001672:holdings}}`），由程序展开原始边界说明。占位符同时按去除后的连续文字与分句边界两种视图检查，既不能拆开禁词/当前性，也不能拼出许可缺失短句。允许的缺失短句不是通用豁免：附加当前配置、暴露、空仓、排名、收益归因或外部数量/日期断言仍受原有检查。历史持仓断言只接受带日期的 `dated_holdings`，行业配置断言只接受带日期的 `dated_allocation`；同分句兼含两种主题则两类证据都必须支持每只引用基金，主题不明的敞口/权重断言不猜测。比较自由文字点名的已知基金必须通过本批单基金校验且被该条证据实际引用，不能仅用成功基金引用掩盖失败基金名称。当前性、跨基金归属、可比性和数量词护栏没有放宽。
 
 横向表只并列净值日期与真实指标区间，不评分或排名。只有全体币种已核验且相同、净值日期相同、指标有效、实际起止区间相同时，才允许对应指标的跨基金数值观察。QDII时差、未知币种、分红或短历史不得靠模型补齐。
 
-状态 `ok/disabled/unavailable/model_failed` 均有原因。失败的 `interpretation.diagnostics` 在JSON、报告和标准日志中保留白名单诊断：固定阶段/错误码、已确认基金代码、章节及从零开始的位置索引，另有字符数、字节数、引用数或JSON行列等计数。诊断不保存模型原文、证据文本、未知字段、未知引用ID、密钥或供应商异常字符串；未知诊断字段丢弃。仅报告首个阻断校验，不表示其他校验已经通过；增加诊断不会追加模型调用或自动发送。
+状态 `ok/partial/disabled/unavailable/model_failed` 均有原因：`ok` 表示全部单基金及必需横向观察通过；`partial` 表示至少一只基金通过，但其他基金或横向观察被拒绝；没有可采用的单基金观点时为 `model_failed`。`fund_statuses` 为每只进入模型输入的基金保存 `status/reason/diagnostics`，数据抓取失败仍单列于 `failed_codes`；`comparison_status` 同样记录横向状态，单基金正常响应为 `not_applicable`。关闭、不可用或整批失败时各范围也显式记录原因。报告显示整体、各基金及横向状态，部分成功时仅显示通过的模型结论，不再声称全部结论均不可用。
+
+`interpretation.diagnostics` 及各范围的 `diagnostics` 在JSON、报告和标准日志中保留白名单诊断：固定阶段/错误码、已确认基金代码、章节及从零开始的位置索引，另有字符数、字节数、引用数或JSON行列等计数。诊断不保存模型原文、证据文本、未知字段、未知引用ID、密钥或供应商异常字符串；未知诊断字段丢弃。每个失败范围仅报告首个阻断校验，不表示其他校验已经通过；全局失败不尝试局部恢复。报告边界再次清洗每个范围的诊断。单次调用、通知路由、发送次数和CLI退出语义不变，不追加模型调用或自动发送。
 
 仅凭HTTP成功不代表解读通过。此前只保留统一校验错误的报告不能回溯具体子校验原因；新诊断只适用于应用补丁后的运行。无配置、关闭、本地后端不允许、模型报错/超时或输出无效不冒充GPT。AI降级本身不使CLI退出失败，仍可按既有通知配置发送明确降级的数据报告，运营检查JSON `interpretation.status`。基金程序API `run_fund_analysis` 默认保持解读关闭以兼容调用，CLI显式开启；历史截止日不混入当前新闻/AI判断。
 
@@ -121,11 +131,11 @@ JSON新闻追加 `evidence_scope` 和 `model_eligible`：`fund_event` 是本基�
 ## 验证与部署注意
 
 ```bash
-python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/test_fund_analysis_service.py tests/test_fund_news_service.py tests/test_fund_interpretation.py tests/test_main_funds.py tests/test_fund_config.py tests/test_daily_fund_workflow.py tests/test_daily_dependencies.py tests/test_fund_dependency_isolation.py
+python -m pytest tests/test_fund_analysis.py tests/test_fund_fetcher.py tests/test_fund_analysis_service.py tests/test_fund_news_service.py tests/test_fund_interpretation.py tests/test_fund_interpretation_isolation.py tests/test_main_funds.py tests/test_fund_config.py tests/test_daily_fund_workflow.py tests/test_daily_dependencies.py tests/test_fund_dependency_isolation.py
 ./scripts/ci_gate.sh
 ```
 
-首次数据接口验收使用 `--no-notify --fund-no-news --fund-no-ai`，只有确认通知配置后再开启推送。离线测试使用合成数据，不用某天的真实行情当永久预期值。
+首次数据接口验收使用 `--no-notify --fund-no-news --fund-no-ai`，只有确认通知配置后再开启推送。指标测试使用合成数据，不用某天行情代替算法预期。缺失证据与部分成功回归另外保留 Run7 的021190去敏输入投影（仅最近两个净值点、原已计算指标及必要持仓关系），用确定性合成叙述和模拟模型边界，未重新请求历史 Run7 的真实模型输出，也不声称复现其原始文本。
 
 现有项目配置在检测到 `HTTP_PROXY` 时会把 `eastmoney.com` 加进 `NO_PROXY`。如果部署环境只能通过HTTPS代理出站，可能出现“单独接口成功、main入口失败”；应按环境需求配置代理（例如仅配置所需 `HTTPS_PROXY`，避免触发该既有直连规则）。本次改造未改动全项目代理策略，也不会关闭TLS校验。
 
@@ -136,3 +146,11 @@ This is an opt-in CLI and manual GitHub Actions MVP for published off-exchange f
 The fund CLI now attempts evidence-cited cloud narrative through the existing configured model interface; use `--fund-no-ai` or manual workflow `fund_no_ai` to disable it. Structured numeric/date placeholders are program-owned. Conservative free-prose checks do not guarantee semantic truth or eliminate every quantitative/temporal error. Actual model/provider identity and explicit degradation states are reported. No local CLI backend or private/plain-HTTP model endpoint is allowed. Endpoint validation does not resolve DNS. The report deadline is not hard cancellation of an in-flight cloud request. Model/provider-boundary mocks do not constitute live API validation. Validation diagnostics now use finite stage/reason codes, validated positions and bounded counts without retaining model output or provider exception text. Legacy generic failures cannot be retroactively attributed. Quote/profile pages and mere mentions in another fund’s portfolio are not issuer events; broad-sector background is separately labelled and excluded from model evidence. News freshness alone is not relevance or event verification.
 
 Only an exact manual `workflow_dispatch` / `funds-only` run excludes `fxmacrodata-public-client` from a temporary requirements file. The original requirements, stock/market/scheduled installs, pip upgrade and Futu smoke check are unchanged. All remaining bytes and relative include paths are preserved; other pip failures still fail the job. Missing, duplicate or continued macro entries fail explicitly, and the temporary file is cleaned up. No dependency source, TLS or hash-verification setting is changed. Full stock installs remain exposed to the original macro wheel HTTP 504 failure. Removing the package also removes its transitive dependency constraints, so resolver output is not guaranteed identical. Local Python 3.12 offline checks do not validate a clean Actions Python 3.11 install; that install has not been run.
+
+Snapshot schema 3 preserves previous fields and adds per-fund `fund_statuses`, `comparison_status`, and program-owned fact `allowed_limitations`. Consumers must handle the new `partial` aggregate state. Global JSON, shape and identity failures still reject the entire response. After those checks, each fund is accepted or rejected as a whole, and comparison text is independently all-or-nothing. Rejected funds cannot support comparisons, including through shared comparison facts. `ok` requires all requested fund scopes and required comparisons to pass; `partial` requires at least one accepted fund with another failed scope; no accepted fund means `model_failed`. Single-fund comparisons are `not_applicable` on normal responses. Reports retain all deterministic data, show each scope's reason and sanitized diagnostics, and display only accepted insights. Scope diagnostics are sanitized again before rendering, saving and logging. Notification count, report routing and CLI exit semantics remain unchanged; AI degradation alone is not a CLI failure. No Web/API changes are involved.
+
+Missing holdings and missing dated industry allocation are separate program-generated facts. Exposure-limit prose must match a complete allowed clause on cited facts for every referenced fund; arbitrary source text cannot create permissions. Missing target-ETF weight permits only its specific weight limitation, not claims of absent holdings or verified current allocation. Unsupported wording should use the program-owned fact placeholder instead. Missing evidence never means zero exposure, and attaching a permitted clause does not exempt current-exposure, numeric, temporal, attribution, ranking or comparison checks. Offline regression and mocked provider responses are not a replay of the real Run7 model output.
+
+Dated holdings cannot substitute for dated industry allocation, or vice versa. Mixed exposure topics require both evidence kinds for every cited fund, and unspecified exposure topics are rejected. Known fund names in comparison prose must refer to accepted and actually cited funds. Input coverage gaps do not prove that the manager has not disclosed holdings; use the supported input-absence clause rather than claiming non-disclosure.
+
+Target-ETF identity facts do not support free-prose ETF exposure/weight claims and cannot borrow dates from stock holdings or industry allocations. Use full program fact slots for known relationship data. Both joined and boundary views of placeholders are checked: slots cannot split unsafe words/currentness or manufacture permitted absence clauses.

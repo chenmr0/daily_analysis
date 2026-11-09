@@ -1,0 +1,122 @@
+{
+  "provenance": {
+    "run_url": "https://github.com/chenmr0/daily_analysis/actions/runs/42570192448",
+    "source_artifact": "fund_report_20261109_055822_470360.json",
+    "source_sha256": "8472b810e87f2908d6bcf03fc9afd6000f8fb63c92e0b52f87ae13da282cf5ba",
+    "projection": "Actual 021190 source data, final two NAV points, existing program metrics; manager and unrelated warnings omitted. Metrics were calculated by the original run, not recalculated from the reduced NAV series.",
+    "model_output": "Unavailable. Test narratives are synthetic examples, not recovered model output."
+  },
+  "analysis": {
+    "canonical_id": "fund:021190",
+    "data": {
+      "profile": {
+        "code": "021190",
+        "name": "南方亚太精选ETF联接(QDII)C",
+        "fund_type": "指数型-海外股票",
+        "currency": null,
+        "inception_date": "2024-05-21",
+        "source_url": "https://fundf10.eastmoney.com/jbgk_021190.html"
+      },
+      "navs": [
+        {
+          "nav_date": "2026-11-04",
+          "unit_nav": 1.3529,
+          "accumulated_nav": 1.3529,
+          "daily_return_pct": -1.84,
+          "event": ""
+        },
+        {
+          "nav_date": "2026-11-05",
+          "unit_nav": 1.3456,
+          "accumulated_nav": 1.3456,
+          "daily_return_pct": -0.54,
+          "event": ""
+        }
+      ],
+      "fetched_at": "2026-11-09 05:58:22.470428+00:00",
+      "source_url": "https://fund.eastmoney.com/pingzhongdata/021190.js",
+      "holdings": null,
+      "warnings": [
+        "未取得可用股票持仓披露；不代表零持仓，也不代表基金或ETF穿透持仓。"
+      ],
+      "related_assets": [
+        {
+          "category": "target_etf",
+          "name": "亚太精选ETF南方",
+          "source_url": "https://fund.eastmoney.com/021190.html",
+          "source_date": null,
+          "code": "159687",
+          "weight_pct": null,
+          "published_at": null,
+          "identity_url": "https://fund.eastmoney.com/159687.html",
+          "basis": "身份核验通过的基金标题区域明确链接相关ETF，并核验ETF页面名称/代码；同源资料，非独立复核；资料发布日期未知",
+          "verified": true
+        }
+      ]
+    },
+    "metrics": {
+      "return_1d": {
+        "value": -0.005395816394412112,
+        "reason": null,
+        "start_date": "2026-11-04",
+        "end_date": "2026-11-05"
+      },
+      "return_1m": {
+        "value": -0.0929558476575667,
+        "reason": null,
+        "start_date": "2026-09-30",
+        "end_date": "2026-11-05"
+      },
+      "return_3m": {
+        "value": -0.08394036353734102,
+        "reason": null,
+        "start_date": "2026-08-05",
+        "end_date": "2026-11-05"
+      },
+      "return_6m": {
+        "value": 0.00022299858767560465,
+        "reason": null,
+        "start_date": "2026-04-30",
+        "end_date": "2026-11-05"
+      },
+      "return_12m": {
+        "value": 0.09247381667613852,
+        "reason": null,
+        "start_date": "2025-11-05",
+        "end_date": "2026-11-05"
+      },
+      "return_ytd": {
+        "value": 0.09034924236285558,
+        "reason": null,
+        "start_date": "2025-12-31",
+        "end_date": "2026-11-05"
+      },
+      "max_drawdown_12m": {
+        "value": 0.12590521259052123,
+        "reason": null,
+        "start_date": "2025-11-05",
+        "end_date": "2026-11-05"
+      }
+    },
+    "warnings": [
+      "未取得可用股票持仓披露；不代表零持仓，也不代表基金或ETF穿透持仓。"
+    ]
+  },
+  "observed_diagnostics": {
+    "stage": "narrative",
+    "code": "historical_evidence_missing",
+    "fund_code": "021190",
+    "section": "evidence",
+    "fund_index": 0,
+    "item_index": 0,
+    "counts": {
+      "citation_count": 3,
+      "fund_count": 6,
+      "placeholder_count": 2,
+      "response_bytes": 10134,
+      "response_chars": 6872,
+      "section_count": 1,
+      "text_chars": 97
+    }
+  }
+}
