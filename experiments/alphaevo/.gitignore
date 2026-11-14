@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+outputs/
+*.csv
+*.db
+*.log
+.env
