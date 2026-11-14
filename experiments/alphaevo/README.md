@@ -90,3 +90,32 @@ git -C "$LAB/alphaevo" rev-parse HEAD
 此目录未改变任何产品接口，因此不修改产品变更日志或生产配置。说明仅中文，是面向本次实验交付，不变更现有双语产品文档。
 
 仅用于工程研究，不构成投资建议，不承诺策略收益。
+
+## 4. DSA 真实行情薄适配层（独立实验，不改变主流程）
+
+`export_dsa_prices.py` 调用仓库内部 `DataFetcherManager.get_daily_data` 或 `TencentFetcher`，传明确起止日期，而不是 API 的最近 days 参数。默认 manager 复用原数据源链；排障可选固定 tencent。仅支持沪深股票，不支持基金净值、新闻或交易执行。
+
+环境仍按前文安装固定 AlphaEvo 源码，然后安装更新后的 `requirements-tested.txt`。该依赖集验证了 manager → Tencent 路径，未安装全部候选数据源 SDK。
+
+```bash
+# LAB 指向你自己的实验输出目录；每次 output 必须是新目录。
+python experiments/alphaevo/export_dsa_prices.py \
+  --symbol 000001 --start 2023-01-01 --end 2025-12-31 \
+  --provider tencent --output "$LAB/data/pingan-2023-2025"
+
+python experiments/alphaevo/run_trial.py \
+  --csv "$LAB/data/pingan-2023-2025/prices.csv" --symbol 000001 \
+  --source-label 'DSA TencentFetcher; 抓取时间见 manifest' \
+  --adjustment 'manifest 已观测 qfqday；当前前复权快照' \
+  --train-start 2023-01-01 --train-end 2024-12-31 \
+  --test-start 2025-01-01 --test-end 2025-12-31 \
+  --output "$LAB/results/pingan-real"
+
+# 复用 manager 路由时将 --provider 改成 manager。
+# 本次实测 TENCENT_PRIORITY=0，Efinance 缺 SDK 后回退到 Tencent。
+python -m unittest discover -s experiments/alphaevo -p 'test_*.py' -v
+```
+
+保护条件：逐年分段并重叠 14 天；校验每段交易日、重复/缺失日期、数值、OHLC、跨段来源和复权口径、重叠价格/成交量一致性。缺失、未知复权或混合来源直接失败，不补造数据。Tencent 在单进程范围内观察真实响应的 qfqday/day 键，不修改产品文件，也不增加请求。输出 CSV 和来源、口径、哈希、抓取时间 manifest；失败记录 failure.json。
+
+注意：当前前复权不是历史时点可获得的复权快照。交易日覆盖采用 XSHG 日历近似沪深，停牌、新上市等合法缺口也会保守拒绝。覆盖完整不代表经济数据无误；未解决 T+1、涨跌停、交易费用、流动性、分红现金流或样本外过拟合。接通行情不代表策略已有效。默认 30 信号门槛不降低。
